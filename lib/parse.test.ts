@@ -3,9 +3,14 @@ import { describe, it } from "node:test";
 import { AnalyzeError } from "./errors.ts";
 import {
   assembleFixes,
+  buildAnalysis,
   isJunkLine,
+  hintSlots,
+  hintTemplate,
   lineAnswer,
   normalize,
+  rejectHint,
+  unionExplicitCovered,
   parseModelOutput,
   readFixes,
   readModelMatch,
@@ -67,7 +72,7 @@ describe("parseModelOutput", () => {
     const analysis = parseModelOutput("Вот разбор:\n```json\n" + raw + "\n```\nГотово.", resume);
     assert.equal(analysis.matchPercent, 50);
     assert.equal(analysis.covered.length, 2);
-    assert.equal(analysis.fixes.length, 1);
+    assert.equal(analysis.fixes.length, 0);
   });
 
   it("drops one ungrounded fix and one ungrounded evidence", () => {
@@ -118,7 +123,7 @@ describe("parseModelOutput", () => {
     const analysis = parseModelOutput(live, resume);
     assert.equal(analysis.covered.length, 1);
     assert.equal(analysis.matchPercent, 100);
-    assert.equal(analysis.fixes.length, 1);
+    assert.equal(analysis.fixes.length, 0);
     assert.match(analysis.matchExplanation, /Закрыто 1 из 1/);
     assert.doesNotMatch(analysis.matchExplanation, /нет пересечения|соответствует/i);
   });
@@ -221,8 +226,7 @@ describe("matchRequirement", () => {
     assert.deepEqual(analysis.gaps.map((item) => item.requirement), ["MVP"]);
     assert.equal(analysis.matchPercent, 80);
     assert.match(analysis.matchExplanation, /Закрыто 4 из 5/);
-    assert.equal(analysis.fixes.length, 1);
-    assert.match(analysis.fixes[0].after, /Яндекс Метрику/);
+    assert.equal(analysis.fixes.length, 0);
     assert.match(analysis.covered[3].evidence, /56 платящих/);
   });
 
@@ -724,5 +728,50 @@ describe("readModelMatch", () => {
     assert.equal(analysis?.gaps.length, 2);
     assert.equal(analysis?.matchPercent, 33);
     assert.equal(readModelMatch("не json", "резюме", ["данные"]), null);
+  });
+});
+
+describe("hints", () => {
+  it("orders a weak line before a gap and fills a data template", () => {
+    const resume = "Вела сверки размещений каждый месяц.";
+    const requirements = ["работа с данными", "AI-инструменты"];
+    const analysis = buildAnalysis(resume, requirements);
+    const slots = hintSlots(resume, analysis);
+    assert.match(slots[0]?.requirement ?? "", /данн/);
+    assert.match(slots[0]?.before ?? "", /сверки/);
+    assert.equal(slots.at(-1)?.before, "");
+    assert.match(slots.at(-1)?.requirement ?? "", /AI/);
+    const hint = hintTemplate("Работа с данными", slots[0]?.before ?? "");
+    assert.match(hint, /данные/);
+    assert.equal(/\d/.test(hint), false);
+    assert.match(hintTemplate("коммиты в git", ""), /Если у вас есть/);
+  });
+
+  it("drops invented numbers, unknown names and refusals", () => {
+    const source = "Вела сверки размещений.\nРабота с данными";
+    assert.equal(rejectHint("Назовите, что именно проверяли.", source), null);
+    assert.match(rejectHint("Напишите, что рост был 15%.", source) ?? "", /new number/);
+    assert.match(rejectHint("Добавьте Python в строку.", source) ?? "", /new name/);
+    assert.equal(rejectHint("Упомяните Cursor, если он уже в строке.", "Пользуюсь Cursor"), null);
+    assert.equal(rejectHint("НЕТ", source), "empty");
+    assert.equal(rejectHint("Эта строка не подходит.", source), "empty");
+  });
+
+  it("keeps a local covered item the model marked as a gap", () => {
+    const resume = "Писал скрипты на Python для остатков.";
+    const model = readModelMatch(
+      JSON.stringify({
+        items: [
+          { requirement: "Python", status: "gap", evidence: "" },
+          { requirement: "SQL", status: "gap", evidence: "" },
+        ],
+      }),
+      resume,
+      ["Python", "SQL"],
+    );
+    const merged = unionExplicitCovered(model!, resume, ["Python", "SQL"]);
+    assert.equal(merged.covered.some((item) => item.requirement === "Python"), true);
+    assert.equal(merged.gaps.some((item) => item.requirement === "Python"), false);
+    assert.equal(merged.matchPercent, 50);
   });
 });

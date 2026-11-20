@@ -109,7 +109,7 @@ export default function HomePage() {
         setCopied((current) => (current === index ? null : current));
       }, 2000);
     } catch {
-      setError("Не удалось скопировать. Выделите текст «стало» и скопируйте вручную.");
+      setError("Не удалось скопировать. Выделите текст подсказки и скопируйте вручную.");
     }
   }
 
@@ -120,7 +120,7 @@ export default function HomePage() {
       </h1>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-600 sm:text-base">
         Вставьте резюме и вакансию или загрузите резюме файлом. Покажем совпадение, пробелы и
-        три правки формулировок.
+        три подсказки, что дописать своими словами.
       </p>
 
       <form onSubmit={onSubmit} className="mt-6">
@@ -157,7 +157,7 @@ export default function HomePage() {
             {loading ? "Разбираем…" : "Разобрать"}
           </button>
           <p className="text-sm text-stone-500">
-            Правки только перефразируют то, что уже написано в резюме. Обычно это занимает до минуты.
+            Подсказки не пишут текст за вас. Обычно это занимает до минуты.
           </p>
         </div>
 
@@ -220,18 +220,23 @@ export default function HomePage() {
 
           {result.fixes.length > 0 ? (
           <section>
-            <h2 className="text-sm font-medium text-stone-500">Правки формулировок</h2>
+            <h2 className="text-sm font-medium text-stone-500">Три подсказки к резюме</h2>
             <ol className="mt-3 space-y-3">
               {result.fixes.map((fix, index) => (
-                <li key={`${fix.before}-${index}`} className="rounded-lg border border-stone-200 bg-white p-4 sm:p-5">
-                  <p className="text-xs font-medium text-stone-500">Было</p>
-                  <p className="mt-1 text-sm leading-relaxed">{fix.before}</p>
-                  <p className="mt-3 text-xs font-medium text-stone-500">Стало</p>
-                  <p className="mt-1 text-sm leading-relaxed">{fix.after}</p>
-                  <p className="mt-3 text-sm text-stone-600">{fix.why}</p>
+                <li key={`${fix.requirement}-${index}`} className="rounded-lg border border-stone-200 bg-white p-4 sm:p-5">
+                  {fix.before ? (
+                    <>
+                      <p className="text-xs font-medium text-stone-500">Строка</p>
+                      <p className="mt-1 text-sm leading-relaxed">{fix.before}</p>
+                    </>
+                  ) : null}
+                  <p className={`${fix.before ? "mt-3" : ""} text-xs font-medium text-stone-500`}>Требование</p>
+                  <p className="mt-1 text-sm leading-relaxed">{fix.requirement}</p>
+                  <p className="mt-3 text-xs font-medium text-stone-500">Что дописать</p>
+                  <p className="mt-1 text-sm leading-relaxed">{fix.hint}</p>
                   <button
                     type="button"
-                    onClick={() => copyFix(index, fix.after)}
+                    onClick={() => copyFix(index, fix.hint)}
                     className="mt-3 inline-flex h-10 items-center rounded-md border border-stone-300 px-3 text-sm hover:bg-stone-50"
                   >
                     {copied === index ? "Скопировано" : "Скопировать"}
