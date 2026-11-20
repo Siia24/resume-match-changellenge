@@ -1,5 +1,5 @@
 import { AnalyzeError } from "@/lib/errors";
-import { completeAnalysis } from "@/lib/gigachat";
+import { completeAnalysis, listRequirements } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
 import { parseModelOutput } from "@/lib/parse";
 
@@ -25,9 +25,23 @@ export async function POST(request: Request) {
   const invalid = inputError(resume, vacancy);
   if (invalid) return jsonError(400, invalid);
 
+  let requirements: string[] = [];
   try {
-    const text = await completeAnalysis(resume, vacancy);
-    return Response.json(parseModelOutput(text, resume));
+    requirements = await listRequirements(vacancy);
+  } catch (error) {
+    if (!(error instanceof AnalyzeError)) throw error;
+    console.error("gigachat requirements", error.message);
+  }
+
+  try {
+    try {
+      const text = await completeAnalysis(resume, vacancy, 0.3, requirements);
+      return Response.json(parseModelOutput(text, resume, requirements));
+    } catch (error) {
+      if (!(error instanceof AnalyzeError) || !error.retryable) throw error;
+      const text = await completeAnalysis(resume, vacancy, 0.6, requirements);
+      return Response.json(parseModelOutput(text, resume, requirements));
+    }
   } catch (error) {
     if (error instanceof AnalyzeError) return jsonError(error.status, error.message);
     console.error("analyze", error instanceof Error ? error.message : "unknown");
