@@ -1,5 +1,6 @@
 export const YM_GOALS = {
   pasteResume: "paste_resume",
+  uploadResume: "upload_resume",
   getAnalysis: "get_analysis",
   copyFix: "copy_fix",
 } as const;
