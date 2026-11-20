@@ -25,7 +25,7 @@ const analysisSchema = z
         }),
       )
       .max(30),
-    fixes: z.array(fixSchema).min(1).max(8),
+    fixes: z.array(fixSchema).max(8),
   });
 
 export type Analysis = z.infer<typeof analysisSchema> & { matchPercent: number };
@@ -61,9 +61,13 @@ export function textIncludesQuote(quote: string, source: string): boolean {
   return pattern.test(haystack);
 }
 
-function balancedObject(text: string): string | null {
-  const start = text.indexOf("{");
-  if (start < 0) return null;
+function balancedSlice(text: string): string | null {
+  const objAt = text.indexOf("{");
+  const arrAt = text.indexOf("[");
+  if (objAt < 0 && arrAt < 0) return null;
+  const start = objAt < 0 ? arrAt : arrAt < 0 ? objAt : Math.min(objAt, arrAt);
+  const open = text[start];
+  const close = open === "{" ? "}" : "]";
   let depth = 0;
   let inString = false;
   let escape = false;
@@ -76,8 +80,8 @@ function balancedObject(text: string): string | null {
       continue;
     }
     if (ch === '"') inString = true;
-    else if (ch === "{") depth += 1;
-    else if (ch === "}") {
+    else if (ch === open) depth += 1;
+    else if (ch === close) {
       depth -= 1;
       if (depth === 0) return text.slice(start, i + 1);
     }
@@ -89,7 +93,7 @@ export function extractJson(text: string): unknown {
   const trimmed = text.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const raw = (fenced?.[1] ?? trimmed).trim();
-  const candidates = [raw, balancedObject(raw), balancedObject(trimmed)].filter(
+  const candidates = [raw, balancedSlice(raw), balancedSlice(trimmed)].filter(
     (value): value is string => Boolean(value),
   );
   for (const candidate of candidates) {
@@ -113,7 +117,120 @@ function matchPercent(covered: number, gaps: number): number {
   return Math.round((100 * covered) / total);
 }
 
-export function parseModelOutput(text: string, resume: string): Analysis {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function textField(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length <= max ? trimmed : trimmed.slice(0, max).trim();
+}
+
+function sanitizeModel(raw: unknown): { value: unknown; dropped: string[] } {
+  const obj = asRecord(raw);
+  if (!obj) return { value: raw, dropped: [] };
+  const dropped: string[] = [];
+  const covered = (Array.isArray(obj.covered) ? obj.covered : []).flatMap((item) => {
+    const row = asRecord(item);
+    const requirement = textField(row?.requirement, 300);
+    const evidence = textField(row?.evidence, 500);
+    if (!requirement || !evidence) {
+      dropped.push("covered");
+      return [];
+    }
+    return [{ requirement, evidence }];
+  });
+  const gaps = (Array.isArray(obj.gaps) ? obj.gaps : []).flatMap((item) => {
+    const requirement = textField(asRecord(item)?.requirement, 300);
+    if (!requirement) {
+      dropped.push("gaps");
+      return [];
+    }
+    return [{ requirement }];
+  });
+  const fixes = (Array.isArray(obj.fixes) ? obj.fixes : []).flatMap((item) => {
+    const row = asRecord(item);
+    const before = textField(row?.before, 500);
+    const after = textField(row?.after, 500);
+    const why = textField(row?.why, 300);
+    if (!before || !after || !why) {
+      dropped.push("fixes");
+      return [];
+    }
+    return [{ before, after, why }];
+  });
+  return {
+    value: {
+      matchExplanation: textField(obj.matchExplanation, 280) ?? "",
+      covered: covered.slice(0, 30),
+      gaps: gaps.slice(0, 30),
+      fixes: fixes.slice(0, 8),
+    },
+    dropped,
+  };
+}
+
+function sameRequirement(left: string, right: string): boolean {
+  const a = normalize(left);
+  const b = normalize(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.length >= 8 && b.length >= 8 && (a.includes(b) || b.includes(a));
+}
+
+function alignRequirements(
+  covered: { requirement: string; evidence: string }[],
+  requirements: string[],
+): { covered: { requirement: string; evidence: string }[]; gaps: { requirement: string }[] } {
+  const used = new Set<number>();
+  const nextCovered: { requirement: string; evidence: string }[] = [];
+  const gaps: { requirement: string }[] = [];
+  for (const requirement of requirements) {
+    const index = covered.findIndex(
+      (item, itemIndex) => !used.has(itemIndex) && sameRequirement(item.requirement, requirement),
+    );
+    if (index >= 0) {
+      used.add(index);
+      nextCovered.push({ requirement, evidence: covered[index].evidence });
+    } else {
+      gaps.push({ requirement });
+    }
+  }
+  return { covered: nextCovered, gaps };
+}
+
+export function readRequirementList(text: string): string[] {
+  let raw: unknown;
+  try {
+    raw = extractJson(text);
+  } catch {
+    return [];
+  }
+  const list = Array.isArray(raw)
+    ? raw
+    : asRecord(raw) && Array.isArray(asRecord(raw)?.requirements)
+      ? (asRecord(raw)?.requirements as unknown[])
+      : [];
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const item of list) {
+    const requirement = textField(item, 300);
+    const key = requirement ? normalize(requirement) : "";
+    if (!requirement || !key || seen.has(key)) continue;
+    seen.add(key);
+    items.push(requirement);
+  }
+  return items.slice(0, 12);
+}
+
+export function parseModelOutput(
+  text: string,
+  resume: string,
+  requirements: string[] = [],
+): Analysis {
   let raw: unknown;
   try {
     raw = extractJson(text);
@@ -122,7 +239,9 @@ export function parseModelOutput(text: string, resume: string): Analysis {
     throw new AnalyzeError(502, BAD_SHAPE, true);
   }
 
-  const parsed = analysisSchema.safeParse(raw);
+  const sanitized = sanitizeModel(raw);
+  if (sanitized.dropped.length) logParse(`drop empty ${sanitized.dropped.join(" ")}`, text);
+  const parsed = analysisSchema.safeParse(sanitized.value);
   if (!parsed.success) {
     const rule = parsed.error.issues
       .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
@@ -158,10 +277,14 @@ export function parseModelOutput(text: string, resume: string): Analysis {
     );
   }
 
+  const checklist = requirements.length
+    ? alignRequirements(covered, requirements)
+    : { covered, gaps: parsed.data.gaps };
   return {
     ...parsed.data,
-    covered,
+    covered: checklist.covered,
+    gaps: checklist.gaps,
     fixes,
-    matchPercent: matchPercent(covered.length, parsed.data.gaps.length),
+    matchPercent: matchPercent(checklist.covered.length, checklist.gaps.length),
   };
 }
