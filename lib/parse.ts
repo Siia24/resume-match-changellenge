@@ -137,6 +137,30 @@ function stemsOf(text: string): string[] {
   return [...new Set(stems)];
 }
 
+export type ResumeLine = { id: string; text: string };
+
+export function resumeLines(resume: string): ResumeLine[] {
+  const plain = resume.replace(/[*_#]+/g, "").replace(/[•·▪‣]/g, "\n");
+  const parts = plain
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter((part) => part.length >= 12);
+  const rows = parts.length ? parts : [plain.replace(/\s+/g, " ").trim()].filter(Boolean);
+  return rows.map((text, index) => ({ id: `L${index + 1}`, text }));
+}
+
+export function linesForPrompt(resume: string, vacancy: string, evidence: string[] = []): ResumeLine[] {
+  const lines = resumeLines(resume);
+  if (lines.length <= 16) return lines;
+  const hints = `${vacancy}\n${evidence.join("\n")}`;
+  const scored = lines.map((line) => ({
+    line,
+    score: stemsOf(line.text).filter((stem) => !GENERIC_STEMS.has(stem) && textHasStem(hints, stem)).length,
+  }));
+  const picked = scored.filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, 18);
+  return (picked.length >= 4 ? picked : scored.slice(0, 12)).map((item) => item.line);
+}
+
 function sentences(resume: string): string[] {
   const parts = resume
     .split(/\n+|(?<=[.!?])\s+/)
@@ -346,7 +370,7 @@ export function rawModelFixes(text: string): { before: string; after: string; wh
   const rows = Array.isArray(raw) ? raw : Array.isArray(obj?.fixes) ? obj.fixes : [];
   return rows.flatMap((item) => {
     const row = asRecord(item);
-    const before = textField(row?.before, 500) ?? "";
+    const before = textField(row?.before, 500) ?? textField(row?.lineId, 12) ?? "";
     const after = textField(row?.after, 500) ?? "";
     const why = textField(row?.why, 300) ?? "";
     if (!before && !after && !why) return [];
@@ -379,16 +403,32 @@ export function readFixes(
   const dropped: { before: string; after: string; why: string; reason: string }[] = [];
   for (const item of rows) {
     const row = asRecord(item);
-    const before = textField(row?.before, 500);
+    const lineId = textField(row?.lineId, 12);
+    const line = lineId
+      ? resumeLines(resume).find((item) => item.id.toLowerCase() === lineId.toLowerCase())
+      : undefined;
+    const before = line ? line.text : textField(row?.before, 500);
     const after = textField(row?.after, 500);
-    const why = textField(row?.why, 300);
+    const why = textField(row?.why, 300) ?? (textField(row?.requirement, 300) ? "Правка." : null);
+    const source = line ? line.text : resume;
+    if (lineId && !line) {
+      if (!quiet) console.error(`parse drop fix unknown line ${lineId}`);
+      reasons.push(`unknown line ${lineId}`);
+      dropped.push({
+        before: before ?? lineId,
+        after: after ?? "",
+        why: why ?? "",
+        reason: `unknown line ${lineId}`,
+      });
+      continue;
+    }
     if (!before || !after || !why) {
       if (!quiet) console.error("parse drop fix empty");
       reasons.push("empty");
       dropped.push({ before: before ?? "", after: after ?? "", why: why ?? "", reason: "empty" });
       continue;
     }
-    const reason = rejectFix({ before, after, why }, resume, requirements, vacancy);
+    const reason = rejectFix({ before, after, why }, source, requirements, vacancy);
     if (reason) {
       if (!quiet) console.error(`parse drop fix ${reason}`);
       reasons.push(reason);
