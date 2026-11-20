@@ -146,7 +146,7 @@ export async function POST(request: Request) {
     console.error(`parse fixes kept ${analysis.fixes.length}, refill ${need}: ${reasons.slice(0, 8).join("; ")}`);
     let more = "";
     try {
-      more = await timed("fixes", () =>
+      more = await timed("fixes_retry", () =>
         completeMoreFixes(
           resume,
           vacancy,
