@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { AnalyzeError } from "./errors.ts";
-import { normalize, parseModelOutput, readRequirementList, rejectFix, textIncludesQuote } from "./parse.ts";
+import {
+  assembleFixes,
+  normalize,
+  parseModelOutput,
+  readRequirementList,
+  rejectFix,
+  textIncludesQuote,
+} from "./parse.ts";
 
 const resume =
   "Три года вел учет склада в 1С. Писал скрипты на Python для остатков. Окончил бакалавриат по экономике.";
@@ -262,6 +269,77 @@ describe("readRequirementList", () => {
       ["AI-инструменты", "работа с данными"],
     );
     assert.deepEqual(readRequirementList('{"requirements":["Excel"]}'), ["Excel"]);
+  });
+});
+
+describe("assembleFixes", () => {
+  const resume =
+    "Анастасия Косолапова. Студентка 3 курса РУДН, направление «Реклама и связи с общественностью». С сентября 2026 года младший эксперт по закупке медиа в СберМаркетинге: сверки размещений, отчёты по радио и прессе, работа с подрядчиками. Основала агентство «Находка»: аудит карточек бизнеса в Яндекс Картах по чек-листу, готовые правки. Пользуюсь Cursor и ChatGPT для прототипов и текстов, настраивала Яндекс Метрику на сайте агентства.";
+  const vacancy =
+    "Junior AI Product Manager в Changellenge. Требования: опыт работы с AI-инструментами (ChatGPT, Cursor и др.); понимание продуктовых метрик и аналитики; умение работать с данными; опыт запуска MVP или прототипов; знание SQL; английский язык на уровне B2; коммуникабельность и умение работать с командой.";
+  const requirements = [
+    "опыт работы с AI-инструментами",
+    "понимание продуктовых метрик и аналитики",
+    "умение работать с данными",
+    "опыт запуска MVP или прототипов",
+    "знание SQL",
+    "английский язык на уровне B2",
+    "коммуникабельность и умение работать с командой",
+  ];
+  const badModel = JSON.stringify({
+    fixes: [
+      fix("Пользуюсь Cursor и ChatGPT для прототипов и текстов", "запускала MVP на Cursor и ChatGPT"),
+      fix(
+        "настраивала Яндекс Метрику на сайте агентства",
+        "веду аналитику продуктовых метрик и показателей эффективности рекламных кампаний",
+      ),
+      fix("Основала агентство «Находка»", "Разработала и внедрила агентство «Находка»"),
+      fix("этой строки в резюме нет", "Другая биография"),
+    ],
+  });
+
+  it("fills three honest rewrites when the model fixes are all rejected", () => {
+    const lines: string[] = [];
+    const previous = console.error;
+    console.error = (message?: unknown) => {
+      lines.push(String(message));
+    };
+    try {
+      const fixes = assembleFixes(resume, vacancy, requirements, [], [badModel]);
+      assert.equal(fixes.length, 3);
+      const joined = fixes.map((item) => `${item.before} ${item.after}`).join(" ");
+      assert.equal(/mvp|внедрила|рекламн/i.test(joined), false);
+      assert.equal(fixes.every((item) => resume.includes(item.before)), true);
+    } finally {
+      console.error = previous;
+    }
+    const log = lines.join("\n");
+    assert.match(log, /drop fix new claim/);
+    assert.match(log, /parse fixes local [1-3]/);
+    assert.equal(log.includes("Косолапова"), false);
+  });
+
+  it("keeps a real model fix and lets vacancy words and light verbs through", () => {
+    const good = JSON.stringify({
+      fixes: [
+        fix(
+          "настраивала Яндекс Метрику на сайте агентства",
+          "На сайте агентства настраивала Яндекс Метрику",
+        ),
+        fix(
+          "Пользуюсь Cursor и ChatGPT для прототипов и текстов",
+          "Делаю прототипы и тексты в Cursor и ChatGPT",
+        ),
+        fix("сверки размещений, отчёты по радио и прессе", "Веду сверки размещений и отчёты по радио и прессе"),
+      ],
+    });
+    const fixes = assembleFixes(resume, vacancy, requirements, [], [badModel, good]);
+    assert.equal(fixes.length, 3);
+    assert.equal(
+      fixes.some((item) => item.after.startsWith("На сайте агентства")),
+      true,
+    );
+    assert.equal(rejectFix(fix("Пользуюсь Cursor и ChatGPT для прототипов и текстов", "Для прототипов пользуюсь Cursor, ChatGPT и SQL"), resume, requirements, vacancy), null);
   });
 });
 
