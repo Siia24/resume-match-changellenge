@@ -4,6 +4,7 @@ import {
   chatBudget,
   httpFailureReason,
   listRequirements,
+  matchVacancy,
   rewriteLine,
 } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
@@ -13,6 +14,7 @@ import {
   lineAnswer,
   pickFixLines,
   readFixes,
+  readModelMatch,
   type Analysis,
   type ResumeLine,
 } from "@/lib/parse";
@@ -74,15 +76,8 @@ export async function POST(request: Request) {
     }
   }
 
-  const matchedAt = Date.now();
-  const preview = buildAnalysis(resume, requirements, []);
-  calls.push({
-    name: "analysis",
-    ms: Date.now() - matchedAt,
-    status: 0,
-    error: "",
-    raw: localAnalysis(preview),
-  });
+  let preview = await modelAnalysis(resume, vacancy, requirements);
+  if (!preview) preview = buildAnalysis(resume, requirements, []);
   const evidence = [...preview.covered, ...preview.partial].map((item) => item.evidence);
   const list = requirements.length
     ? requirements
@@ -90,8 +85,32 @@ export async function POST(request: Request) {
 
   armGigachatBudget(25_000);
   const fixes = await rewriteLines(pickFixLines(resume, vacancy, list, evidence), list, resume, vacancy);
-  const analysis: Analysis = buildAnalysis(resume, list, fixes);
+  const analysis: Analysis = { ...preview, fixes: fixes.slice(0, 3) };
   return Response.json(debug ? { ...analysis, debug: { calls, dropped, refill } } : analysis);
+
+  async function modelAnalysis(resume: string, vacancy: string, requirements: string[]) {
+    armGigachatBudget(12_000);
+    const timeout = chatBudget(12_000);
+    if (!timeout) return null;
+    const started = Date.now();
+    try {
+      const raw = await matchVacancy(resume, vacancy, requirements, timeout);
+      const parsed = readModelMatch(raw, resume, requirements);
+      calls.push({
+        name: "analysis",
+        ms: Date.now() - started,
+        status: 200,
+        error: parsed ? "" : "локальный фолбэк",
+        raw,
+      });
+      return parsed;
+    } catch (error) {
+      calls.push(failedCall("analysis", started, error));
+      if (!(error instanceof AnalyzeError)) throw error;
+      console.error("gigachat analysis", error.message);
+      return null;
+    }
+  }
 
   async function rewriteLines(
     lines: ResumeLine[],
@@ -144,9 +163,14 @@ export async function POST(request: Request) {
     const started = Date.now();
     try {
       const raw = await rewriteLine(line.text, requirement, timeout);
-      const answer = lineAnswer(raw);
+      const answer = lineAnswer(raw, line.text);
       calls.push({ name: `fix_${line.id}`, ms: Date.now() - started, status: 200, error: "", raw });
-      return { status: 200, error: "", after: answer.after, why: answer.why };
+      return {
+        status: 200,
+        error: "",
+        after: answer.after,
+        why: `Подсвечивает требование: ${requirement}`,
+      };
     } catch (error) {
       const failed = failedCall(`fix_${line.id}`, started, error);
       calls.push(failed);
@@ -166,13 +190,3 @@ function failedCall(name: string, started: number, error: unknown): DebugCall {
   };
 }
 
-function localAnalysis(preview: Analysis): string {
-  const line = (title: string, items: { requirement: string }[]) =>
-    `${title}: ${items.map((item) => item.requirement).join("; ") || "—"}`;
-  return [
-    "Локальное сопоставление требований и резюме, запроса к модели нет.",
-    line("covered", preview.covered),
-    line("partial", preview.partial),
-    line("gaps", preview.gaps),
-  ].join("\n");
-}
