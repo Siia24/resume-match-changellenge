@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { AnalyzeError } from "./errors.ts";
-import { normalize, parseModelOutput, textIncludesQuote } from "./parse.ts";
+import { normalize, parseModelOutput, readRequirementList, textIncludesQuote } from "./parse.ts";
 
 const resume =
   "Три года вел учет склада в 1С. Писал скрипты на Python для остатков. Окончил бакалавриат по экономике.";
@@ -103,6 +103,50 @@ describe("parseModelOutput", () => {
     );
   });
 
+  it("drops the empty placeholder covered item from the live payload", () => {
+    const live =
+      '{"matchPercent":0,"matchExplanation":"Нет пересечения опыта и навыков кандидата с требованиями вакансии.","covered":[{"requirement":"","evidence":""}],"gaps":[{"requirement":"опыт с данными"}],"fixes":[{"before":"вел учет склада в 1С","after":"Вёл учёт склада в 1С","why":"Так требование видно сразу."},{"before":"Писал скрипты на Python для остатков","after":"Писал скрипты на Python для учёта остатков","why":"Яснее."},{"before":"Окончил бакалавриат по экономике","after":"Бакалавриат по экономике","why":"Короче."}]}';
+    const analysis = parseModelOutput(live, resume);
+    assert.equal(analysis.covered.length, 0);
+    assert.equal(analysis.gaps[0]?.requirement, "опыт с данными");
+    assert.equal(analysis.matchPercent, 0);
+    assert.equal(analysis.fixes.length, 3);
+    assert.match(analysis.matchExplanation, /Нет пересечения/);
+  });
+
+  it("keeps the vacancy requirement list and fills missing items as gaps", () => {
+    const sample =
+      "Веду задачи в Cursor и ChatGPT. Смотрю Яндекс Метрику. Делаю сверки и отчёты в Excel.";
+    const analysis = parseModelOutput(
+      JSON.stringify({
+        matchExplanation: "Инструменты и данные уже есть.",
+        covered: [
+          { requirement: "AI-инструменты", evidence: "Cursor и ChatGPT" },
+          { requirement: "продуктовые метрики", evidence: "Яндекс Метрику" },
+          { requirement: "работа с данными", evidence: "сверки и отчёты" },
+          { requirement: "", evidence: "" },
+        ],
+        gaps: [],
+        fixes: [
+          fix("Веду задачи в Cursor и ChatGPT", "Веду задачи в Cursor и ChatGPT для работы"),
+          fix("Смотрю Яндекс Метрику", "Смотрю продуктовые метрики в Яндекс Метрике"),
+          fix("Делаю сверки и отчёты в Excel", "Делаю сверки и отчёты в Excel по данным"),
+        ],
+      }),
+      sample,
+      ["AI-инструменты", "продуктовые метрики", "работа с данными", "коммуникабельность"],
+    );
+    assert.deepEqual(
+      analysis.covered.map((item) => item.requirement),
+      ["AI-инструменты", "продуктовые метрики", "работа с данными"],
+    );
+    assert.deepEqual(
+      analysis.gaps.map((item) => item.requirement),
+      ["коммуникабельность"],
+    );
+    assert.equal(analysis.matchPercent, 75);
+  });
+
   it("rejects prose instead of json and logs the rule", () => {
     const lines: string[] = [];
     const previous = console.error;
@@ -122,6 +166,16 @@ describe("parseModelOutput", () => {
     }
     assert.match(lines.join("\n"), /not json/);
     assert.equal(lines.join("\n").includes("Bearer"), false);
+  });
+});
+
+describe("readRequirementList", () => {
+  it("reads a fenced array and drops blanks and duplicates", () => {
+    assert.deepEqual(
+      readRequirementList('```json\n["AI-инструменты"," AI-инструменты ","","работа с данными"]\n```'),
+      ["AI-инструменты", "работа с данными"],
+    );
+    assert.deepEqual(readRequirementList('{"requirements":["Excel"]}'), ["Excel"]);
   });
 });
 
