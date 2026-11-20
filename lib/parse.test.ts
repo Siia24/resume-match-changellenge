@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { AnalyzeError } from "./errors.ts";
 import {
   assembleFixes,
+  isJunkLine,
   normalize,
   parseModelOutput,
   readFixes,
@@ -439,6 +440,117 @@ describe("lineId fixes", () => {
     assert.match(review.fixes[0]?.before ?? "", /Сверки размещений/);
     assert.match(review.fixes[1]?.before ?? "", /Cursor и ChatGPT/);
     assert.equal(review.fixes.some((item) => /AI-инструментов|15%|TikTok/i.test(item.after)), false);
+  });
+});
+
+describe("fix filter edges", () => {
+  const line = "С сентября 2026 года вела сверки размещений и готовила отчёты. Привлекла 1\u00a0500+ заявок параллельно.";
+  const requirements = ["умение работать с данными"];
+
+  it("drops junk lines and keeps a real sentence", () => {
+    const resume = [
+      "> под вакансию.",
+      "Ничего не выдумываем — всё ниже подтверждено текстом резюме.",
+      "# Опыт",
+      "Москва | Telegram | телефон | email user@mail.ru",
+      line,
+    ].join("\n");
+    assert.equal(isJunkLine("> под вакансию."), true);
+    assert.equal(isJunkLine("Ничего не выдумываем — всё ниже подтверждено текстом резюме."), true);
+    assert.equal(isJunkLine("# Опыт работы в компании"), true);
+    assert.equal(isJunkLine("Москва | Telegram | телефон | email user@mail.ru"), true);
+    const lines = resumeLines(resume);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]?.text ?? "", /сверки размещений/);
+  });
+
+  it("accepts 1500, a dropped year, verbal nouns and a word from the same line", () => {
+    assert.equal(
+      rejectFix(
+        fix("Привлекла 1 500+ заявок", "1500 заявок привлекла по данным"),
+        "Привлекла 1\u00a0500+ заявок",
+        requirements,
+        "работа с данными",
+      ),
+      null,
+    );
+    assert.equal(
+      rejectFix(
+        fix(
+          "С сентября 2026 года вела сверки размещений и отчёты по радио",
+          "Веду сверки размещений и готовлю отчёты по радио и данным",
+        ),
+        "С сентября 2026 года вела сверки размещений и отчёты по радио",
+        requirements,
+        "работа с данными",
+      ),
+      null,
+    );
+    assert.equal(
+      rejectFix(
+        fix("Пользуюсь Cursor для прототипов и текстов", "Для создания прототипов и написания текстов пользуюсь Cursor"),
+        "Пользуюсь Cursor для прототипов и текстов",
+        ["опыт работы с AI-инструментами"],
+        "AI-инструменты, прототипы",
+      ),
+      null,
+    );
+    const resume = "Вела сверки размещений параллельно с коллегами.\nПользуюсь Cursor и ChatGPT для прототипов и текстов каждый день.";
+    const review = readFixes(
+      JSON.stringify({
+        fixes: [
+          {
+            lineId: "L1",
+            requirement: "умение работать с данными",
+            after: "Параллельно веду сверки размещений по данным",
+            why: "Факт виден сразу.",
+          },
+          {
+            lineId: "L2",
+            requirement: "данные",
+            after: "Параллельно веду сверки размещений",
+            why: "Нет.",
+          },
+        ],
+      }),
+      resume,
+      requirements,
+      "работа с данными",
+      true,
+    );
+    assert.equal(review.fixes.length, 1);
+    assert.match(review.fixes[0]?.before ?? "", /параллельно/);
+    assert.equal(review.reasons.some((reason) => reason.startsWith("new word парал")), true);
+  });
+
+  it("drops a tense-only rewrite and an unrelated after", () => {
+    assert.equal(
+      rejectFix(
+        fix("Закрывала отчёты по радио и прессе", "Закрываю отчёты по радио и прессе"),
+        "Закрывала отчёты по радио и прессе",
+        requirements,
+        "работа с данными",
+      ),
+      "tense",
+    );
+    assert.equal(
+      rejectFix(
+        fix("Сверки размещений, отчёты по радио и прессе", "Готовлю аналитику данных для команды"),
+        "Сверки размещений, отчёты по радио и прессе",
+        requirements,
+        "работа с данными, аналитика и команда",
+      ),
+      "unrelated",
+    );
+    assert.equal(
+      rejectFix(
+        fix("Повышала конверсию отдела на 15%", "Повышаю конверсию отдела"),
+        "Повышала конверсию отдела на 15%",
+        requirements,
+        "работа с данными",
+      ),
+      "dropped number",
+    );
   });
 });
 

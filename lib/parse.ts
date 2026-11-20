@@ -115,7 +115,7 @@ const GENERIC_STEMS = new Set([
 ]);
 
 const CLAIM_STEMS = ["запус", "разра", "внедр", "дости", "эффек", "высок", "оптим", "увелич", "сократ", "рост"];
-const LIGHT_STEMS = /^(дела|веду|вела|наст|пишу|писа|смотр|рабо|исп|поль|помо|зани|отве|гото|пров|соби|свер|сост|анал)/;
+const LIGHT_STEMS = /^(дела|веду|вела|наст|пишу|писа|смотр|рабо|исп|поль|помо|зани|отве|гото|пров|соби|свер|сост|анал|созда|напис|веден|подго)/;
 const TITLE_STEMS = ["менед", "директ", "руковод", "продакт", "junior", "senior"];
 
 const CLICHE = /имеется опыт|осуществля|достигнут|высокая эффективность/;
@@ -139,13 +139,33 @@ function stemsOf(text: string): string[] {
 
 export type ResumeLine = { id: string; text: string };
 
+function wordCount(text: string): number {
+  return (text.match(/[A-Za-zА-Яа-яЁё]{2,}/g) ?? []).length;
+}
+
+export function isJunkLine(raw: string): boolean {
+  const text = raw.trim();
+  if (!text) return true;
+  if (/^>/.test(text) || /^#{1,6}(\s|$)/.test(text)) return true;
+  if (/@|https?:\/\/|www\.|telegram|телефон|почта|e-mail|email/i.test(text)) return true;
+  if (/ничего не выдумыва|всё ниже подтверждено|все ниже подтверждено|под вакансию/i.test(text)) return true;
+  const digits = text.replace(/\D/g, "");
+  if (digits.length >= 10 && /\d[\d\s().-]{8,}\d/.test(text)) return true;
+  return wordCount(text.replace(/[*_#>`]/g, " ")) < 5;
+}
+
 export function resumeLines(resume: string): ResumeLine[] {
-  const plain = resume.replace(/[*_#]+/g, "").replace(/[•·▪‣]/g, "\n");
-  const parts = plain
+  const parts = resume
     .split(/\n+|(?<=[.!?])\s+/)
-    .map((part) => part.replace(/\s+/g, " ").trim())
-    .filter((part) => part.length >= 12);
-  const rows = parts.length ? parts : [plain.replace(/\s+/g, " ").trim()].filter(Boolean);
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0 && !isJunkLine(part));
+  const rows = parts.map((part) =>
+    part
+      .replace(/[*_#>`]+/g, "")
+      .replace(/[•·▪‣]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  ).filter((part) => wordCount(part) >= 5);
   return rows.map((text, index) => ({ id: `L${index + 1}`, text }));
 }
 
@@ -272,14 +292,17 @@ export function rejectFix(
   if (before.replace(/\s+/g, " ").trim().toLowerCase() === after.replace(/\s+/g, " ").trim().toLowerCase()) {
     return "unchanged";
   }
+  const kept = metricNumbers(before);
+  const next = metricNumbers(after);
+  for (const num of kept) {
+    if (!next.includes(num)) return "dropped number";
+  }
+  for (const num of next) {
+    if (!kept.includes(num) && !metricNumbers(resume).includes(num)) return `new number ${num}`;
+  }
   if (tokenBag(before) === tokenBag(after)) return "shuffle";
+  if (stemBag(before) === stemBag(after)) return "tense";
   if (CLICHE.test(normalize(after))) return "cliche";
-  for (const num of before.match(/\d+/g) ?? []) {
-    if (!after.includes(num)) return "dropped number";
-  }
-  for (const num of after.match(/\d+/g) ?? []) {
-    if (!resume.includes(num)) return `new number ${num}`;
-  }
   const allowedText = `${requirements.join(" ")}\n${vacancy}`;
   for (const token of normalize(after).split(/[^a-zа-я0-9]+/i).filter(Boolean)) {
     const latin = /[a-z]/i.test(token);
@@ -295,8 +318,58 @@ export function rejectFix(
     if (known || LIGHT_STEMS.test(stem) || textHasStem(allowedText, stem)) continue;
     return `new word ${token}`;
   }
+  if (!sharesLine(before, after)) return "unrelated";
   if (requirements.length && !linkedRequirement(`${before} ${after}`, requirements)) return "off vacancy";
   return null;
+}
+
+function isDateNumber(num: string, text: string): boolean {
+  if (/^(19|20)\d{2}$/.test(num)) return true;
+  const around = normalize(text);
+  return (
+    Number(num) <= 31 &&
+    /январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр/.test(around)
+  );
+}
+
+function metricNumbers(text: string): string[] {
+  const compact = text.replace(/[\u00a0\u202f]/g, " ").replace(/(\d)\s+(?=\d)/g, "$1");
+  const found = new Set<string>();
+  for (const match of compact.matchAll(/(\d+(?:[.,]\d+)?)(\s*%|\s*\+|\s*(?:руб|₽|\$))?/g)) {
+    const num = match[1].replace(",", ".");
+    const mark = match[2] ?? "";
+    if (isDateNumber(num, compact) && !mark.trim()) continue;
+    if (mark.trim() || Number(num) >= 10) found.add(num);
+  }
+  return [...found];
+}
+
+function stemBag(text: string): string {
+  return normalize(text)
+    .split(/[^a-zа-я0-9]+/i)
+    .filter((token) => token.length >= 5)
+    .map((token) => token.slice(0, 5))
+    .sort()
+    .join(" ");
+}
+
+function contentStemBag(text: string): string {
+  return normalize(text)
+    .split(/[^a-zа-я0-9]+/i)
+    .filter((token) => token.length >= 5 && !LIGHT_STEMS.test(token.slice(0, 5)))
+    .map((token) => token.slice(0, 5))
+    .sort()
+    .join(" ");
+}
+
+function sharesLine(before: string, after: string): boolean {
+  const source = new Set(contentStemBag(before).split(" ").filter(Boolean));
+  const next = contentStemBag(after).split(" ").filter(Boolean);
+  if (!next.length || !source.size) return true;
+  const shared = next.filter((stem) =>
+    [...source].some((item) => item.slice(0, 5) === stem.slice(0, 5) || item.slice(0, 4) === stem.slice(0, 4)),
+  );
+  return shared.length / next.length >= 0.5;
 }
 
 function tokenBag(text: string): string {
@@ -401,6 +474,7 @@ export function readFixes(
   const fixes: { before: string; after: string; why: string }[] = [];
   const reasons: string[] = [];
   const dropped: { before: string; after: string; why: string; reason: string }[] = [];
+  const perLine = new Map<string, number>();
   for (const item of rows) {
     const row = asRecord(item);
     const lineId = textField(row?.lineId, 12);
@@ -428,6 +502,13 @@ export function readFixes(
       dropped.push({ before: before ?? "", after: after ?? "", why: why ?? "", reason: "empty" });
       continue;
     }
+    const usedOnLine = lineId ? (perLine.get(lineId.toLowerCase()) ?? 0) : 0;
+    if (lineId && usedOnLine >= 2) {
+      if (!quiet) console.error(`parse drop fix too many ${lineId}`);
+      reasons.push(`too many ${lineId}`);
+      dropped.push({ before, after, why, reason: `too many ${lineId}` });
+      continue;
+    }
     const reason = rejectFix({ before, after, why }, source, requirements, vacancy);
     if (reason) {
       if (!quiet) console.error(`parse drop fix ${reason}`);
@@ -440,6 +521,7 @@ export function readFixes(
       linked && !touchesRequirement(why, linked)
         ? `Ближе к требованию «${linked}».`
         : why;
+    if (lineId) perLine.set(lineId.toLowerCase(), usedOnLine + 1);
     fixes.push({ before, after, why: named.slice(0, 300) });
   }
   return { fixes: fixes.slice(0, 8), reasons, dropped };
