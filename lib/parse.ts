@@ -113,6 +113,7 @@ const GENERIC_STEMS = new Set([
 ]);
 
 const CLAIM_STEMS = ["запус", "разра", "внедр", "дости", "эффек", "высок", "оптим", "увелич", "сократ"];
+const LIGHT_STEMS = /^(дела|веду|вела|наст|пишу|писа|смотр|рабо|исп|поль|помо|зани|отве|гото|пров|соби|свер|сост)/;
 
 const CLICHE = /имеется опыт|осуществля|достигнут|высокая эффективность/;
 
@@ -236,6 +237,7 @@ export function rejectFix(
   fix: { before: string; after: string; why: string },
   resume: string,
   requirements: string[],
+  vacancy = "",
 ): string | null {
   const before = fix.before.trim();
   const after = fix.after.trim();
@@ -247,17 +249,65 @@ export function rejectFix(
   for (const num of before.match(/\d+/g) ?? []) {
     if (!after.includes(num)) return "dropped number";
   }
-  const requirementText = requirements.join(" ");
+  const allowedText = `${requirements.join(" ")}\n${vacancy}`;
   for (const token of normalize(after).split(/[^a-zа-я0-9]+/i).filter(Boolean)) {
     const significant = token.length >= 5 || (token.length >= 2 && !/^[а-я]+$/i.test(token));
     if (!significant) continue;
     const stem = token.length >= 5 ? token.slice(0, 5) : token;
-    const inResume = textHasStem(resume, stem) || textHasStem(before, stem);
-    const claim = CLAIM_STEMS.some((prefix) => stem.startsWith(prefix));
-    if (claim && !inResume) return `new claim ${token}`;
-    if (!inResume && !textHasStem(requirementText, stem)) return `new word ${token}`;
+    const known = textHasStem(resume, stem) || textHasStem(before, stem);
+    if (CLAIM_STEMS.some((prefix) => stem.startsWith(prefix)) && !known) return `new claim ${token}`;
+    if (known || LIGHT_STEMS.test(stem) || textHasStem(allowedText, stem)) continue;
+    return `new word ${token}`;
   }
   return null;
+}
+
+function tidy(text: string): string {
+  const trimmed = text.replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}.`;
+}
+
+function reorder(sentence: string): string | null {
+  const bare = sentence.replace(/[.!?]+$/, "").trim();
+  const parts = bare.split(/,\s+/).map((part) => part.trim()).filter((part) => part.length >= 8);
+  if (parts.length >= 2) {
+    const next = tidy(`${parts.slice(1).join(", ")}, ${parts[0]}`);
+    if (next.replace(/\s+/g, " ").trim().toLowerCase() !== sentence.replace(/\s+/g, " ").trim().toLowerCase()) {
+      return next;
+    }
+  }
+  const sides = bare.split(/\s+и\s+/);
+  if (sides.length === 2 && sides[0].length >= 8 && sides[1].length >= 8) {
+    const left = `${sides[0].charAt(0).toLowerCase()}${sides[0].slice(1)}`;
+    return tidy(`${sides[1]} и ${left}`);
+  }
+  return null;
+}
+
+export function lightFixes(
+  resume: string,
+  vacancy: string,
+  requirements: string[],
+  have: { before: string }[],
+  need: number,
+): { before: string; after: string; why: string }[] {
+  const seen = new Set(have.map((fix) => normalize(fix.before)));
+  const fixes: { before: string; after: string; why: string }[] = [];
+  for (const sentence of sentences(resume)) {
+    if (fixes.length >= need) break;
+    if (seen.has(normalize(sentence))) continue;
+    const after = reorder(sentence);
+    if (!after) continue;
+    const fix = { before: sentence, after, why: "Так строка читается прямее, без новых фактов." };
+    const reason = rejectFix(fix, resume, requirements, vacancy);
+    if (reason) {
+      console.error(`parse drop fix local ${reason}`);
+      continue;
+    }
+    seen.add(normalize(sentence));
+    fixes.push(fix);
+  }
+  return fixes;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -286,6 +336,7 @@ export function readFixes(
   text: string,
   resume: string,
   requirements: string[],
+  vacancy = "",
 ): { before: string; after: string; why: string }[] {
   let raw: unknown;
   try {
@@ -303,12 +354,12 @@ export function readFixes(
     const after = textField(row?.after, 500);
     const why = textField(row?.why, 300);
     if (!before || !after || !why) {
-      logParse("drop empty fix", text);
+      console.error("parse drop fix empty");
       continue;
     }
-    const reason = rejectFix({ before, after, why }, resume, requirements);
+    const reason = rejectFix({ before, after, why }, resume, requirements, vacancy);
     if (reason) {
-      logParse(`drop fix ${reason}`, before);
+      console.error(`parse drop fix ${reason}`);
       continue;
     }
     fixes.push({ before, after, why });
@@ -363,13 +414,44 @@ function inferRequirements(text: string): string[] {
   return items.slice(0, 12);
 }
 
+export function assembleFixes(
+  resume: string,
+  vacancy: string,
+  requirements: string[],
+  accepted: { before: string; after: string; why: string }[],
+  modelTexts: string[],
+): { before: string; after: string; why: string }[] {
+  const fixes = [...accepted];
+  for (const text of modelTexts) {
+    let more: { before: string; after: string; why: string }[] = [];
+    try {
+      more = readFixes(text, resume, requirements, vacancy);
+    } catch (error) {
+      console.error(`parse fixes refill ${error instanceof Error ? error.message : "error"}`);
+      continue;
+    }
+    for (const fix of more) {
+      if (fixes.some((item) => normalize(item.before) === normalize(fix.before))) continue;
+      fixes.push(fix);
+    }
+  }
+  if (fixes.length < 3) {
+    const local = lightFixes(resume, vacancy, requirements, fixes, 3 - fixes.length);
+    console.error(`parse fixes local ${local.length}`);
+    fixes.push(...local);
+  }
+  console.error(`parse fixes kept ${Math.min(fixes.length, 3)}`);
+  return fixes.slice(0, 3);
+}
+
 export function parseModelOutput(
   text: string,
   resume: string,
   requirements: string[] = [],
+  vacancy = "",
 ): Analysis {
   const list = requirements.length ? requirements : inferRequirements(text);
-  const fixes = readFixes(text, resume, list);
+  const fixes = readFixes(text, resume, list, vacancy);
   if (!list.length && !fixes.length) {
     logParse("empty checklist", text);
     throw new AnalyzeError(502, BAD_SHAPE, true);

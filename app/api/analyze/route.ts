@@ -1,7 +1,7 @@
 import { AnalyzeError } from "@/lib/errors";
 import { completeAnalysis, completeMoreFixes, listRequirements } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
-import { buildAnalysis, parseModelOutput, readFixes, type Analysis } from "@/lib/parse";
+import { assembleFixes, buildAnalysis, parseModelOutput, type Analysis } from "@/lib/parse";
 
 export const maxDuration = 120;
 
@@ -54,23 +54,29 @@ export async function POST(request: Request) {
     return jsonError(502, "Не удалось получить разбор. Попробуйте ещё раз.");
   }
 
+  const list = requirements.length
+    ? requirements
+    : [...analysis.covered, ...analysis.partial, ...analysis.gaps].map((item) => item.requirement);
   if (analysis.fixes.length < 3) {
+    const need = 3 - analysis.fixes.length;
+    console.error(`parse fixes kept ${analysis.fixes.length}, refill ${need}`);
+    let more = "";
     try {
-      const more = await completeMoreFixes(
+      more = await completeMoreFixes(
         resume,
         vacancy,
-        requirements,
+        list,
         analysis.fixes.map((fix) => fix.before),
-        3 - analysis.fixes.length,
+        need,
       );
-      const extra = readFixes(more, resume, requirements);
-      const list = requirements.length
-        ? requirements
-        : [...analysis.covered, ...analysis.partial, ...analysis.gaps].map((item) => item.requirement);
-      analysis = buildAnalysis(resume, list, [...analysis.fixes, ...extra]);
     } catch (error) {
-      console.error("gigachat fixes", error instanceof Error ? error.message : "error");
+      console.error(`parse fixes refill failed ${error instanceof Error ? error.message : "error"}`);
     }
+    analysis = buildAnalysis(
+      resume,
+      list,
+      assembleFixes(resume, vacancy, list, analysis.fixes, more ? [more] : []),
+    );
   }
   return Response.json(analysis);
 }
