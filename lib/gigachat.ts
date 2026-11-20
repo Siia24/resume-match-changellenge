@@ -83,6 +83,24 @@ export function upstreamBodySnippet(text: string): string {
     .slice(0, 180);
 }
 
+let budgetDeadline = 0;
+
+export function armGigachatBudget(ms: number) {
+  budgetDeadline = ms > 0 ? Date.now() + ms : 0;
+}
+
+export function chatBudget(capMs: number, now = Date.now()): number | null {
+  if (!budgetDeadline) return capMs;
+  const left = budgetDeadline - now;
+  if (left < 4000) return null;
+  return Math.min(capMs, left - 1500);
+}
+
+function bounded(ms: number): number {
+  if (!budgetDeadline) return ms;
+  return Math.max(1000, Math.min(ms, budgetDeadline - Date.now() - 500));
+}
+
 function logUpstream(kind: "oauth" | "chat", status: number, text: string) {
   console.error(`gigachat ${kind} status ${status} body ${upstreamBodySnippet(text)}`);
 }
@@ -175,7 +193,7 @@ async function fetchToken(): Promise<string> {
         Authorization: `Basic ${key}`,
       },
       new URLSearchParams({ scope: scope() }).toString(),
-      15_000,
+      bounded(8_000),
     );
   } catch (error) {
     if (error instanceof AnalyzeError) throw error;
@@ -263,6 +281,7 @@ async function postMessages(
   messages: { role: string; content: string }[],
   temperature: number,
   maxTokens: number,
+  timeoutMs: number,
 ) {
   return requestJson(
     chatCompletionsUrl(),
@@ -278,7 +297,7 @@ async function postMessages(
       max_tokens: maxTokens,
       stream: false,
     }),
-    50_000,
+    bounded(timeoutMs),
   );
 }
 
@@ -297,16 +316,17 @@ async function completeMessages(
   messages: { role: string; content: string }[],
   temperature: number,
   maxTokens: number,
+  timeoutMs: number,
 ): Promise<string> {
   requireAuthKey();
   let token = await getAccessToken();
   let response: UpstreamBody;
   try {
-    response = await postMessages(token, messages, temperature, maxTokens);
+    response = await postMessages(token, messages, temperature, maxTokens, timeoutMs);
     if (response.status === 401) {
       cached = null;
       token = await getAccessToken();
-      response = await postMessages(token, messages, temperature, maxTokens);
+      response = await postMessages(token, messages, temperature, maxTokens, timeoutMs);
     }
   } catch (error) {
     if (error instanceof AnalyzeError) throw error;
@@ -333,7 +353,7 @@ async function completeMessages(
   return content;
 }
 
-export async function listRequirements(vacancy: string): Promise<string[]> {
+export async function listRequirements(vacancy: string, timeoutMs = 8_000): Promise<string[]> {
   const text = await completeMessages(
     [
       { role: "system", content: REQUIREMENTS_PROMPT },
@@ -341,6 +361,7 @@ export async function listRequirements(vacancy: string): Promise<string[]> {
     ],
     0.2,
     600,
+    timeoutMs,
   );
   return readRequirementList(text);
 }
@@ -352,6 +373,7 @@ export async function completeMoreFixes(
   accepted: string[],
   need: number,
   reasons: string[] = [],
+  timeoutMs = 12_000,
 ): Promise<string> {
   const skip = accepted.length
     ? `\n\nЭти before уже приняты, не повторяй их:\n${accepted.map((item) => `- ${item}`).join("\n")}`
@@ -369,6 +391,7 @@ export async function completeMoreFixes(
     ],
     0.4,
     1500,
+    timeoutMs,
   );
 }
 
@@ -377,6 +400,7 @@ export async function completeAnalysis(
   vacancy: string,
   temperature = 0.3,
   requirements: string[] = [],
+  timeoutMs = 16_000,
 ): Promise<string> {
   return completeMessages(
     [
@@ -385,5 +409,6 @@ export async function completeAnalysis(
     ],
     temperature,
     3072,
+    timeoutMs,
   );
 }

@@ -381,4 +381,22 @@ describe("textIncludesQuote", () => {
     assert.equal(textIncludesQuote("Вёл учёт склада в 1С.", resume), true);
     assert.equal(textIncludesQuote("учет   склада в 1С!!!", resume), true);
   });
+
+  it("matches a quote when the resume has markdown, bullets and dashes", () => {
+    const marked = "**Пользуюсь** Cursor и ChatGPT\n- для прототипов и текстов\nсверки — отчёты";
+    assert.equal(normalize(marked).includes("пользуюсь cursor и chatgpt для прототипов и текстов"), true);
+    assert.equal(normalize(marked).includes("сверки отчеты"), true);
+    assert.equal(
+      rejectFix(
+        fix(
+          "Пользуюсь Cursor и ChatGPT для прототипов и текстов",
+          "Делаю прототипы в Cursor и пишу тексты с ChatGPT",
+        ),
+        marked,
+        ["опыт работы с AI-инструментами"],
+        "AI-инструменты, прототипы",
+      ),
+      null,
+    );
+  });
 });
