@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chatCompletionsUrl, gigachatModel, upstreamBodySnippet } from "./gigachat.ts";
+import { armGigachatBudget, chatBudget, chatCompletionsUrl, gigachatModel, upstreamBodySnippet } from "./gigachat.ts";
 
 describe("chatCompletionsUrl", () => {
   it("uses the documented base and joins the chat path", () => {
@@ -38,6 +38,20 @@ describe("gigachatModel", () => {
       if (previous === undefined) delete process.env.GIGACHAT_MODEL;
       else process.env.GIGACHAT_MODEL = previous;
     }
+  });
+});
+
+describe("chatBudget", () => {
+  it("caps a call and skips it when the deadline is close", () => {
+    armGigachatBudget(0);
+    assert.equal(chatBudget(8_000), 8_000);
+    armGigachatBudget(3_000);
+    assert.equal(chatBudget(8_000), null);
+    armGigachatBudget(20_000);
+    const value = chatBudget(8_000);
+    assert.equal(typeof value, "number");
+    assert.equal((value ?? 0) <= 8_000, true);
+    armGigachatBudget(0);
   });
 });
 

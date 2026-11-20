@@ -15,8 +15,10 @@ const BAD_SHAPE = "Модель вернула ответ в неожиданн�
 
 export function normalize(text: string): string {
   return text
+    .replace(/[*_#]+/g, "")
+    .replace(/[•·▪‣]/g, " ")
     .replace(/[«»“”„"]/g, "")
-    .replace(/[–—−]/g, "-")
+    .replace(/[–—−-]/g, " ")
     .replace(/ё/gi, "е")
     .replace(/\s+/g, " ")
     .trim()
@@ -333,13 +335,36 @@ function requirementTexts(value: unknown): string[] {
   return items;
 }
 
+export function rawModelFixes(text: string): { before: string; after: string; why: string }[] {
+  let raw: unknown;
+  try {
+    raw = extractJson(text);
+  } catch {
+    return [];
+  }
+  const obj = asRecord(raw);
+  const rows = Array.isArray(raw) ? raw : Array.isArray(obj?.fixes) ? obj.fixes : [];
+  return rows.flatMap((item) => {
+    const row = asRecord(item);
+    const before = textField(row?.before, 500) ?? "";
+    const after = textField(row?.after, 500) ?? "";
+    const why = textField(row?.why, 300) ?? "";
+    if (!before && !after && !why) return [];
+    return [{ before, after, why }];
+  });
+}
+
 export function readFixes(
   text: string,
   resume: string,
   requirements: string[],
   vacancy = "",
   quiet = false,
-): { fixes: { before: string; after: string; why: string }[]; reasons: string[] } {
+): {
+  fixes: { before: string; after: string; why: string }[];
+  reasons: string[];
+  dropped: { before: string; after: string; why: string; reason: string }[];
+} {
   let raw: unknown;
   try {
     raw = extractJson(text);
@@ -351,6 +376,7 @@ export function readFixes(
   const rows = Array.isArray(raw) ? raw : Array.isArray(obj?.fixes) ? obj.fixes : [];
   const fixes: { before: string; after: string; why: string }[] = [];
   const reasons: string[] = [];
+  const dropped: { before: string; after: string; why: string; reason: string }[] = [];
   for (const item of rows) {
     const row = asRecord(item);
     const before = textField(row?.before, 500);
@@ -359,12 +385,14 @@ export function readFixes(
     if (!before || !after || !why) {
       if (!quiet) console.error("parse drop fix empty");
       reasons.push("empty");
+      dropped.push({ before: before ?? "", after: after ?? "", why: why ?? "", reason: "empty" });
       continue;
     }
     const reason = rejectFix({ before, after, why }, resume, requirements, vacancy);
     if (reason) {
       if (!quiet) console.error(`parse drop fix ${reason}`);
       reasons.push(reason);
+      dropped.push({ before, after, why, reason });
       continue;
     }
     const linked = linkedRequirement(`${before} ${after}`, requirements);
@@ -374,7 +402,7 @@ export function readFixes(
         : why;
     fixes.push({ before, after, why: named.slice(0, 300) });
   }
-  return { fixes: fixes.slice(0, 8), reasons };
+  return { fixes: fixes.slice(0, 8), reasons, dropped };
 }
 
 export function readRequirementList(text: string): string[] {
