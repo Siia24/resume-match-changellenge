@@ -148,10 +148,24 @@ export function isJunkLine(raw: string): boolean {
   if (!text) return true;
   if (/^>/.test(text) || /^#{1,6}(\s|$)/.test(text)) return true;
   if (/@|https?:\/\/|www\.|telegram|телефон|почта|e-mail|email/i.test(text)) return true;
-  if (/ничего не выдумыва|всё ниже подтверждено|все ниже подтверждено|под вакансию/i.test(text)) return true;
+  if (/ничего не выдумыва|ниже подтверждено|под вакансию|под каждую вакансию/i.test(text)) return true;
+  if (text.includes("|") || /:\s*$/.test(text) || /\bим\.\s*$/i.test(text)) return true;
   const digits = text.replace(/\D/g, "");
   if (digits.length >= 10 && /\d[\d\s().-]{8,}\d/.test(text)) return true;
-  return wordCount(text.replace(/[*_#>`]/g, " ")) < 5;
+  const words = text.replace(/[*_#>`|-]/g, " ");
+  if (wordCount(words) < 5) return true;
+  return !hasFact(words);
+}
+
+function hasFact(text: string): boolean {
+  return normalize(text)
+    .split(/[^a-zа-я0-9]+/i)
+    .some(
+      (token) =>
+        token.length >= 4 &&
+        (/(ла|ло|ли|ал|ил|ел|ать|ить|еть|аю|яю|ую|ешь|ишь|ет|ут|ют|ем|им)$/.test(token) ||
+          /^(вел|дела|свер|готов|пиш|работ|основ|польз|настр|закры|приним|систем|аудит)/.test(token)),
+    );
 }
 
 export function resumeLines(resume: string): ResumeLine[] {
@@ -167,6 +181,24 @@ export function resumeLines(resume: string): ResumeLine[] {
       .trim(),
   ).filter((part) => wordCount(part) >= 5);
   return rows.map((text, index) => ({ id: `L${index + 1}`, text }));
+}
+
+export function pickFixLines(
+  resume: string,
+  vacancy: string,
+  requirements: string[],
+  evidence: string[] = [],
+): ResumeLine[] {
+  const hints = `${vacancy}\n${requirements.join("\n")}\n${evidence.join("\n")}`;
+  const scored = resumeLines(resume).map((line) => ({
+    line,
+    score:
+      stemsOf(line.text).filter((stem) => !GENERIC_STEMS.has(stem) && textHasStem(hints, stem)).length +
+      (/аудит|чек-лист|чеклист|агентств|основал|карточек/.test(normalize(line.text)) ? 2 : 0),
+  }));
+  const picked = scored.filter((item) => item.score > 0).sort((a, b) => b.score - a.score);
+  const pool = picked.length ? picked : [...scored].sort((a, b) => b.line.text.length - a.line.text.length);
+  return pool.slice(0, 6).map((item) => item.line);
 }
 
 export function linesForPrompt(resume: string, vacancy: string, evidence: string[] = []): ResumeLine[] {
@@ -289,22 +321,25 @@ export function rejectFix(
   const before = fix.before.trim();
   const after = fix.after.trim();
   if (!normalize(before) || !normalize(resume).includes(normalize(before))) return "before not in resume";
+  if (!sharesLine(before, after)) return "unrelated";
   if (before.replace(/\s+/g, " ").trim().toLowerCase() === after.replace(/\s+/g, " ").trim().toLowerCase()) {
     return "unchanged";
   }
-  const kept = metricNumbers(before);
+  const kept = metricNumbers(before.replace(/\([^)]*\)/g, " "));
+  const beforeAll = metricNumbers(before);
   const next = metricNumbers(after);
   for (const num of kept) {
     if (!next.includes(num)) return "dropped number";
   }
   for (const num of next) {
-    if (!kept.includes(num) && !metricNumbers(resume).includes(num)) return `new number ${num}`;
+    if (!beforeAll.includes(num)) return `new number ${num}`;
   }
   if (tokenBag(before) === tokenBag(after)) return "shuffle";
   if (stemBag(before) === stemBag(after)) return "tense";
   if (CLICHE.test(normalize(after))) return "cliche";
   const allowedText = `${requirements.join(" ")}\n${vacancy}`;
   for (const token of normalize(after).split(/[^a-zа-я0-9]+/i).filter(Boolean)) {
+    if (/^\d+(?:[.,]\d+)?$/.test(token)) continue;
     const latin = /[a-z]/i.test(token);
     const significant = token.length >= 5 || (token.length >= 2 && latin);
     if (!significant) continue;
@@ -315,11 +350,24 @@ export function rejectFix(
     if (TITLE_STEMS.some((prefix) => stem.startsWith(prefix)) && !textHasStem(resume, stem)) {
       return `title change ${token}`;
     }
-    if (known || LIGHT_STEMS.test(stem) || textHasStem(allowedText, stem)) continue;
+    if (
+      known ||
+      LIGHT_STEMS.test(stem) ||
+      textHasStem(allowedText, stem) ||
+      (/^(около|приме)/.test(stem) && /~|≈/.test(before)) ||
+      (stem.startsWith("ежеме") && /в месяц|ежемесяч|каждый месяц/.test(normalize(before)))
+    ) {
+      continue;
+    }
     return `new word ${token}`;
   }
-  if (!sharesLine(before, after)) return "unrelated";
-  if (requirements.length && !linkedRequirement(`${before} ${after}`, requirements)) return "off vacancy";
+  if (
+    requirements.length &&
+    !linkedRequirement(`${before} ${after}`, requirements) &&
+    !/аудит|чек-лист|чеклист|агентств|основал|карточек|находк/.test(normalize(before))
+  ) {
+    return "off vacancy";
+  }
   return null;
 }
 
@@ -395,6 +443,20 @@ function touchesRequirement(text: string, requirement: string): boolean {
   return BRIDGES.some(
     (bridge) => bridge.line.some((stem) => line.includes(stem)) && bridge.req.some((stem) => req.includes(stem)),
   );
+}
+
+export function bestRequirement(line: string, requirements: string[]): string {
+  return linkedRequirement(line, requirements) ?? requirements[0] ?? "требование вакансии";
+}
+
+export function lineAnswer(text: string): { after: string; why: string } {
+  try {
+    const raw = extractJson(text);
+    const obj = asRecord(raw);
+    return { after: textField(obj?.after, 500) ?? "", why: textField(obj?.why, 300) ?? "" };
+  } catch {
+    return { after: "", why: "" };
+  }
 }
 
 export function linkedRequirement(

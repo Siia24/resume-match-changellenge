@@ -1,17 +1,19 @@
 import { AnalyzeError } from "@/lib/errors";
-import { armGigachatBudget, chatBudget, completeAnalysis, completeMoreFixes, listRequirements } from "@/lib/gigachat";
+import { armGigachatBudget, chatBudget, listRequirements, rewriteLine } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
 import {
-  assembleFixes,
+  bestRequirement,
   buildAnalysis,
-  parseModelOutput,
-  rawModelFixes,
+  lineAnswer,
+  pickFixLines,
   readFixes,
+  resumeLines,
   type Analysis,
+  type ResumeLine,
 } from "@/lib/parse";
 
 export const maxDuration = 60;
-const BUDGET_MS = 48_000;
+const BUDGET_MS = 25_000;
 
 type DebugCall = {
   name: string;
@@ -56,9 +58,7 @@ export async function POST(request: Request) {
           ? value
               .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
               .map((before) => ({ before, after: "", why: "" }))
-          : typeof value === "string"
-            ? rawModelFixes(value)
-            : [],
+          : [],
       });
       return value;
     } catch (error) {
@@ -80,114 +80,82 @@ export async function POST(request: Request) {
 
   const preview = buildAnalysis(resume, requirements, []);
   const evidence = [...preview.covered, ...preview.partial].map((item) => item.evidence);
-  let analysis: Analysis | null = null;
-  let text = "";
-  const analysisTimeout = chatBudget(16_000);
-  if (analysisTimeout) {
-    try {
-      text = await timed("analysis", () =>
-        completeAnalysis(resume, vacancy, 0.3, requirements, analysisTimeout, evidence),
-      );
-    } catch (error) {
-      if (!(error instanceof AnalyzeError) || !error.retryable) {
-        if (requirements.length) analysis = buildAnalysis(resume, requirements, []);
-        else return fail(error, debug, calls, refill);
-      } else {
-        const retryTimeout = chatBudget(12_000);
-        if (retryTimeout) {
-          try {
-            text = await timed("retry", () =>
-              completeAnalysis(resume, vacancy, 0.5, requirements, retryTimeout, evidence),
-            );
-          } catch (retryError) {
-            if (requirements.length) analysis = buildAnalysis(resume, requirements, []);
-            else return fail(retryError, debug, calls, refill);
-          }
-        } else if (requirements.length) {
-          analysis = buildAnalysis(resume, requirements, []);
-        } else {
-          return fail(error, debug, calls, refill);
-        }
-      }
-    }
-  } else if (requirements.length) {
-    analysis = buildAnalysis(resume, requirements, []);
-  } else {
-    return jsonError(502, "GigaChat не успел ответить. Попробуйте ещё раз.");
-  }
-
-  if (!analysis && text) {
-    try {
-      analysis = parseModelOutput(text, resume, requirements, vacancy);
-    } catch (error) {
-      if (!(error instanceof AnalyzeError) || !requirements.length) return fail(error, debug, calls, refill);
-      analysis = buildAnalysis(resume, requirements, []);
-    }
-  }
-  if (!analysis) analysis = buildAnalysis(resume, requirements, []);
-
   const list = requirements.length
     ? requirements
-    : [...analysis.covered, ...analysis.partial, ...analysis.gaps].map((item) => item.requirement);
-  let reasons: string[] = [];
-  if (text) {
-    try {
-      const review = readFixes(text, resume, list, vacancy, true);
-      reasons = review.reasons;
-      dropped.push(...review.dropped);
-    } catch {
-      reasons = ["not json"];
-    }
-  }
-  const refillTimeout = analysis.fixes.length < 3 ? chatBudget(12_000) : null;
-  if (refillTimeout) {
-    refill = true;
-    const need = 3 - analysis.fixes.length;
-    console.error(`parse fixes kept ${analysis.fixes.length}, refill ${need}: ${reasons.slice(0, 8).join("; ")}`);
-    let more = "";
-    try {
-      more = await timed("fixes_retry", () =>
-        completeMoreFixes(
-          resume,
-          vacancy,
-          list,
-          analysis!.fixes.map((fix) => fix.before),
-          need,
-          reasons,
-          refillTimeout,
-          evidence,
-        ),
-      );
-    } catch (error) {
-      console.error(`parse fixes refill failed ${error instanceof Error ? error.message : "error"}`);
-    }
-    if (more) {
-      try {
-        dropped.push(...readFixes(more, resume, list, vacancy, true).dropped);
-      } catch {
-        dropped.push({ before: "", after: "", why: "", reason: "not json" });
-      }
-    }
-    analysis = buildAnalysis(
-      resume,
-      list,
-      assembleFixes(resume, vacancy, list, analysis.fixes, more ? [more] : []),
+    : [...preview.covered, ...preview.partial, ...preview.gaps].map((item) => item.requirement);
+  const chosen = pickFixLines(resume, vacancy, list, evidence);
+  let fixes = await rewriteLines(chosen, list, resume, vacancy, []);
+
+  async function rewriteLines(
+    lines: ResumeLine[],
+    requirements: string[],
+    source: string,
+    role: string,
+    reasons: string[],
+  ) {
+    const timeout = chatBudget(12_000);
+    if (!timeout || !lines.length) return [];
+    const accepted: { index: number; fixes: Analysis["fixes"] }[] = [];
+    await Promise.all(
+      lines.map(async (line, index) => {
+        const requirement = bestRequirement(line.text, requirements);
+        const started = Date.now();
+        let after = "";
+        let why = "";
+        try {
+          const raw = await rewriteLine(line.text, requirement, timeout, reasons);
+          const answer = lineAnswer(raw);
+          after = answer.after;
+          why = answer.why;
+        } catch (error) {
+          console.error(`parse fix ${line.id} ${error instanceof Error ? error.message : "error"}`);
+        }
+        calls.push({
+          name: `fix_${line.id}`,
+          ms: Date.now() - started,
+          raw: [{ before: line.text, after, why }],
+        });
+        if (!after) {
+          dropped.push({ before: line.text, after: "", why, reason: "empty" });
+          return;
+        }
+        const review = readFixes(
+          JSON.stringify({
+            fixes: [{ lineId: line.id, requirement, after, why: why || "Правка." }],
+          }),
+          source,
+          requirements,
+          role,
+          true,
+        );
+        dropped.push(...review.dropped);
+        accepted.push({ index, fixes: review.fixes });
+      }),
     );
+    return accepted.sort((a, b) => a.index - b.index).flatMap((item) => item.fixes);
   }
+  if (fixes.length < 3) {
+    const retryTimeout = chatBudget(8_000);
+    const used = new Set(fixes.map((fix) => fix.before.replace(/\s+/g, " ").trim()));
+    const rest = resumeLines(resume)
+      .filter((line) => !used.has(line.text.replace(/\s+/g, " ").trim()))
+      .filter((line) => !chosen.some((item) => item.id === line.id))
+      .slice(0, 6);
+    if (retryTimeout && rest.length) {
+      refill = true;
+      console.error(`parse fixes kept ${fixes.length}, refill ${rest.map((line) => line.id).join(",")}`);
+      const more = await rewriteLines(
+        rest,
+        list,
+        resume,
+        vacancy,
+        dropped.map((item) => item.reason),
+      );
+      fixes = [...fixes, ...more];
+    }
+  }
+  const analysis: Analysis = buildAnalysis(resume, list, fixes);
 
   return Response.json(debug ? { ...analysis, debug: { calls, dropped, refill } } : analysis);
 }
 
-function fail(error: unknown, debug: boolean, calls: DebugCall[], refill: boolean) {
-  const message =
-    error instanceof AnalyzeError
-      ? error.message
-      : "Не удалось получить разбор. Попробуйте ещё раз.";
-  const status = error instanceof AnalyzeError ? error.status : 502;
-  if (!(error instanceof AnalyzeError)) {
-    console.error("analyze", error instanceof Error ? error.message : "unknown");
-  }
-  return Response.json(debug ? { error: message, debug: { calls, dropped: [], refill } } : { error: message }, {
-    status,
-  });
-}

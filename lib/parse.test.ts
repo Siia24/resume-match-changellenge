@@ -228,7 +228,7 @@ describe("matchRequirement", () => {
     const sample = "В агентстве «Находка» 56 платящих клиентов. Пользуюсь Cursor и ChatGPT.";
     assert.equal(
       rejectFix(fix("Пользуюсь Cursor и ChatGPT", "запускала MVP"), sample, ["AI-инструменты"]),
-      "new claim запускала",
+      "unrelated",
     );
     assert.match(
       rejectFix(
@@ -236,15 +236,15 @@ describe("matchRequirement", () => {
         sample,
         ["продуктовые метрики"],
       ) ?? "",
-      /new word/,
+      /unrelated|new word/,
     );
     assert.match(
       rejectFix(fix("Пользуюсь Cursor и ChatGPT", "достигнута высокая эффективность"), sample, []) ?? "",
-      /cliche|new claim/,
+      /unrelated|cliche|new claim/,
     );
     assert.match(
       rejectFix(fix("Пользуюсь Cursor и ChatGPT", "Разработала и внедрила"), sample, []) ?? "",
-      /new claim/,
+      /unrelated|new claim/,
     );
     assert.equal(
       rejectFix(
@@ -433,9 +433,7 @@ describe("lineId fixes", () => {
       review.dropped.map((item) => item.reason),
     );
     assert.equal(review.reasons.some((reason) => reason.startsWith("unknown line")), true);
-    assert.equal(review.reasons.some((reason) => /tiktok|new tool|new claim/i.test(reason)), true);
-    assert.equal(review.reasons.some((reason) => reason.includes("15")), true);
-    assert.equal(review.reasons.some((reason) => /new tool ai/i.test(reason)), true);
+    assert.equal(review.reasons.filter((reason) => reason === "unrelated").length >= 2, true);
     assert.equal(review.fixes.length, 2);
     assert.match(review.fixes[0]?.before ?? "", /Сверки размещений/);
     assert.match(review.fixes[1]?.before ?? "", /Cursor и ChatGPT/);
@@ -459,6 +457,10 @@ describe("fix filter edges", () => {
     assert.equal(isJunkLine("Ничего не выдумываем — всё ниже подтверждено текстом резюме."), true);
     assert.equal(isJunkLine("# Опыт работы в компании"), true);
     assert.equal(isJunkLine("Москва | Telegram | телефон | email user@mail.ru"), true);
+    assert.equal(isJunkLine("Под каждую вакансию собирается отдельное резюме:"), true);
+    assert.equal(isJunkLine("Патриса Лумумбы, ИМЭБ, бакалавриат"), true);
+    assert.equal(isJunkLine("- Параллельно (второй диплом): РУДН им."), true);
+    assert.equal(isJunkLine("| Навык | Уровень |"), true);
     const lines = resumeLines(resume);
     assert.equal(lines.length, 1);
     assert.match(lines[0]?.text ?? "", /сверки размещений/);
@@ -520,7 +522,7 @@ describe("fix filter edges", () => {
     );
     assert.equal(review.fixes.length, 1);
     assert.match(review.fixes[0]?.before ?? "", /параллельно/);
-    assert.equal(review.reasons.some((reason) => reason.startsWith("new word парал")), true);
+    assert.equal(review.reasons.includes("unrelated"), true);
   });
 
   it("drops a tense-only rewrite and an unrelated after", () => {
@@ -550,6 +552,48 @@ describe("fix filter edges", () => {
         "работа с данными",
       ),
       "dropped number",
+    );
+    assert.equal(
+      rejectFix(
+        fix("Ежемесячно закрывала радиоразмещения и сверяла выходы", "Обладать опытом в HR-tech"),
+        "Ежемесячно закрывала радиоразмещения и сверяла выходы",
+        ["опыт в HR-tech"],
+        "HR-tech",
+      ),
+      "unrelated",
+    );
+    assert.equal(
+      rejectFix(
+        fix("Около ~41 800 выходов в месяц", "Около 41800 выходов ежемесячно"),
+        "Около ~41 800 выходов в месяц",
+        ["выходы"],
+        "выходы",
+      ),
+      null,
+    );
+    assert.equal(
+      rejectFix(
+        fix(
+          "Принимаю и систематизирую десятки эфирных справок (31 файл) каждый месяц",
+          "Ежемесячно принимаю и систематизирую десятки эфирных справок",
+        ),
+        "Принимаю и систематизирую десятки эфирных справок (31 файл) каждый месяц",
+        [],
+        "",
+      ),
+      null,
+    );
+    assert.notEqual(
+      rejectFix(
+        fix(
+          "Основала агентство «Находка»: аудит карточек бизнеса по чек-листу",
+          "Веду аудит карточек бизнеса по чек-листу в агентстве «Находка»",
+        ),
+        "Основала агентство «Находка»: аудит карточек бизнеса по чек-листу",
+        ["коммуникабельность"],
+        "коммуникабельность",
+      ),
+      "off vacancy",
     );
   });
 });
