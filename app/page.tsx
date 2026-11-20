@@ -218,6 +218,7 @@ export default function HomePage() {
             </section>
           </div>
 
+          {result.fixes.length > 0 ? (
           <section>
             <h2 className="text-sm font-medium text-stone-500">Правки формулировок</h2>
             <ol className="mt-3 space-y-3">
@@ -239,6 +240,7 @@ export default function HomePage() {
               ))}
             </ol>
           </section>
+          ) : null}
         </div>
       ) : null}
     </main>
