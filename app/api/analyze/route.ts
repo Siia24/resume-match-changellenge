@@ -2,21 +2,21 @@ import { AnalyzeError } from "@/lib/errors";
 import {
   armGigachatBudget,
   chatBudget,
+  askHint,
   httpFailureReason,
   listRequirements,
   matchVacancy,
-  rewriteLine,
 } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
 import {
-  bestRequirement,
   buildAnalysis,
+  hintSlots,
+  hintTemplate,
   lineAnswer,
-  pickFixLines,
-  readFixes,
   readModelMatch,
+  rejectHint,
+  unionExplicitCovered,
   type Analysis,
-  type ResumeLine,
 } from "@/lib/parse";
 
 export const maxDuration = 60;
@@ -78,14 +78,9 @@ export async function POST(request: Request) {
 
   let preview = await modelAnalysis(resume, vacancy, requirements);
   if (!preview) preview = buildAnalysis(resume, requirements, []);
-  const evidence = [...preview.covered, ...preview.partial].map((item) => item.evidence);
-  const list = requirements.length
-    ? requirements
-    : [...preview.covered, ...preview.partial, ...preview.gaps].map((item) => item.requirement);
-
   armGigachatBudget(25_000);
-  const fixes = await rewriteLines(pickFixLines(resume, vacancy, list, evidence), list, resume, vacancy);
-  const analysis: Analysis = { ...preview, fixes: fixes.slice(0, 3) };
+  const fixes = await collectHints(hintSlots(resume, preview).slice(0, 3), vacancy);
+  const analysis: Analysis = { ...preview, fixes };
   return Response.json(debug ? { ...analysis, debug: { calls, dropped, refill } } : analysis);
 
   async function modelAnalysis(resume: string, vacancy: string, requirements: string[]) {
@@ -96,14 +91,15 @@ export async function POST(request: Request) {
     try {
       const raw = await matchVacancy(resume, vacancy, requirements, timeout);
       const parsed = readModelMatch(raw, resume, requirements);
+      const merged = parsed ? unionExplicitCovered(parsed, resume, requirements) : null;
       calls.push({
         name: "analysis",
         ms: Date.now() - started,
         status: 200,
-        error: parsed ? "" : "локальный фолбэк",
+        error: merged ? "" : "локальный фолбэк",
         raw,
       });
-      return parsed;
+      return merged;
     } catch (error) {
       calls.push(failedCall("analysis", started, error));
       if (!(error instanceof AnalyzeError)) throw error;
@@ -112,70 +108,52 @@ export async function POST(request: Request) {
     }
   }
 
-  async function rewriteLines(
-    lines: ResumeLine[],
-    requirements: string[],
-    source: string,
-    role: string,
-  ) {
+  async function collectHints(slots: { before: string; requirement: string }[], role: string) {
     const accepted: Analysis["fixes"] = [];
-    for (const line of lines) {
-      if (accepted.length >= 3) break;
+    for (const [index, slot] of slots.entries()) {
       const timeout = chatBudget(12_000);
-      if (!timeout) break;
-      const requirement = bestRequirement(line.text, requirements);
-      let outcome = await ask(line, requirement, timeout);
-      if (outcome.status === 429) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        const retry = chatBudget(12_000);
-        if (retry) outcome = await ask(line, requirement, retry);
+      let hint = "";
+      if (timeout) {
+        let outcome = await ask(slot, index, timeout, role);
+        if (outcome.status === 429) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const retry = chatBudget(12_000);
+          if (retry) outcome = await ask(slot, index, retry, role);
+        }
+        const http = httpFailureReason(outcome.status);
+        if (http || (outcome.status === 0 && outcome.error)) {
+          dropped.push({ before: slot.before, after: "", why: "", reason: http ?? outcome.error });
+        } else if (!outcome.hint) {
+          dropped.push({ before: slot.before, after: "", why: "", reason: outcome.reason || "empty" });
+        } else {
+          hint = outcome.hint;
+        }
       }
-      const http = httpFailureReason(outcome.status);
-      if (http || (outcome.status === 0 && outcome.error)) {
-        dropped.push({
-          before: line.text,
-          after: "",
-          why: "",
-          reason: http ?? outcome.error,
-        });
-        continue;
-      }
-      if (!outcome.after) {
-        dropped.push({ before: line.text, after: "", why: outcome.why, reason: "empty" });
-        continue;
-      }
-      const review = readFixes(
-        JSON.stringify({
-          fixes: [{ lineId: line.id, requirement, after: outcome.after, why: outcome.why || "Правка." }],
-        }),
-        source,
-        requirements,
-        role,
-        true,
-      );
-      dropped.push(...review.dropped);
-      accepted.push(...review.fixes);
+      if (!hint) hint = hintTemplate(slot.requirement, slot.before);
+      accepted.push({ before: slot.before, requirement: slot.requirement, hint });
     }
     return accepted;
   }
 
-  async function ask(line: ResumeLine, requirement: string, timeout: number) {
+  async function ask(
+    slot: { before: string; requirement: string },
+    index: number,
+    timeout: number,
+    role: string,
+  ) {
     const started = Date.now();
+    const name = `hint_${index + 1}`;
     try {
-      const raw = await rewriteLine(line.text, requirement, timeout);
-      const answer = lineAnswer(raw, line.text);
-      calls.push({ name: `fix_${line.id}`, ms: Date.now() - started, status: 200, error: "", raw });
-      return {
-        status: 200,
-        error: "",
-        after: answer.after,
-        why: `Подсвечивает требование: ${requirement}`,
-      };
+      const raw = await askHint(slot.before, slot.requirement, role, timeout);
+      const answer = lineAnswer(raw, slot.before);
+      calls.push({ name, ms: Date.now() - started, status: 200, error: "", raw });
+      const reason = rejectHint(answer.after, `${slot.before}\n${role}\n${slot.requirement}`);
+      return { status: 200, error: "", hint: reason ? "" : answer.after, reason: reason ?? "" };
     } catch (error) {
-      const failed = failedCall(`fix_${line.id}`, started, error);
+      const failed = failedCall(name, started, error);
       calls.push(failed);
-      console.error(`parse fix ${line.id} ${failed.error}`);
-      return { status: failed.status, error: failed.error, after: "", why: "" };
+      console.error(`parse hint ${name} ${failed.error}`);
+      return { status: failed.status, error: failed.error, hint: "", reason: "" };
     }
   }
 }

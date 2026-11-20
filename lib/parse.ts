@@ -8,7 +8,7 @@ export type Analysis = {
   covered: { requirement: string; evidence: string }[];
   partial: { requirement: string; evidence: string }[];
   gaps: { requirement: string }[];
-  fixes: { before: string; after: string; why: string }[];
+  fixes: { before: string; requirement: string; hint: string }[];
 };
 
 const BAD_SHAPE = "Модель вернула ответ в неожиданном виде. Попробуйте ещё раз.";
@@ -289,7 +289,7 @@ export function explainMatch(covered: number, partial: number, total: number): s
 export function buildAnalysis(
   resume: string,
   requirements: string[],
-  fixes: { before: string; after: string; why: string }[],
+  fixes: Analysis["fixes"] = [],
 ): Analysis {
   const covered: Analysis["covered"] = [];
   const partial: Analysis["partial"] = [];
@@ -536,7 +536,7 @@ function isRefusal(text: string): boolean {
 function cleanFixLine(text: string, source: string): string {
   let line = text.trim().replace(/^[«»"'“”]+|[«»"'“”]+$/g, "").trim();
   line = line.replace(/^(?:[-•*]|\d+[.)])\s+/, "").trim();
-  line = line.replace(/^(?:after|новая формулировка|правка)\s*:\s*/i, "").trim();
+  line = line.replace(/^(?:after|новая формулировка|правка|подсказка)\s*:\s*/i, "").trim();
   line = line.replace(/^[«»"'“”]+|[«»"'“”]+$/g, "").trim();
   const colon = line.indexOf(":");
   if (colon > 0) {
@@ -565,6 +565,141 @@ export function lineAnswer(text: string, source = ""): { after: string; why: str
   const lines = raw.split(/\n+/).map((line) => cleanFixLine(line, source)).filter(Boolean);
   const after = lines.find((line) => !isRefusal(line)) ?? "";
   return { after: isRefusal(after) ? "" : after, why: "" };
+}
+
+export function rejectHint(hint: string, source: string): string | null {
+  const text = hint.trim();
+  if (!text || isRefusal(text)) return "empty";
+  const allowed = `${source} ${normalize(source)}`;
+  for (const num of text.match(/\d+(?:[.,]\d+)?/g) ?? []) {
+    if (!allowed.includes(num) && !allowed.includes(num.replace(",", "."))) return `new number ${num}`;
+  }
+  for (const token of normalize(text).split(/[^a-z0-9]+/i).filter((item) => /[a-z]/i.test(item) && item.length >= 2)) {
+    if (!normalize(source).includes(token)) return `new name ${token}`;
+  }
+  return null;
+}
+
+export function hintTemplate(requirement: string, before: string): string {
+  const kind = normalize(requirement);
+  const line = Boolean(before.trim());
+  const row = HINT_TEMPLATES.find((item) => item.test.test(kind));
+  const text = row ? (line ? row.line : row.gap) : line
+    ? `Опишите своими словами, как эта строка закрывает требование «${requirement}». Не добавляйте новых фактов.`
+    : `Если у вас есть опыт по пункту «${requirement}», добавьте отдельную строку про него.`;
+  return text.split(/(?<=[.!?])\s+/).slice(0, 2).join(" ");
+}
+
+const HINT_TEMPLATES: { test: RegExp; line: string; gap: string }[] = [
+  {
+    test: /данн|сверк|excel|таблиц/,
+    line: "Назовите, что именно проверяли и что это дало: сколько расхождений нашли или как ускорили закрытие месяца. Слово «данные» можно вынести в начало.",
+    gap: "Если у вас есть опыт работы с данными, добавьте строку про то, что считали и какой был результат.",
+  },
+  {
+    test: /прототип/,
+    line: "Напишите, что именно собирали как прототип и для кого. Не придумывайте новый продукт.",
+    gap: "Если у вас есть опыт прототипов, добавьте строку про то, что собирали и кто этим пользовался.",
+  },
+  {
+    test: /\bai\b|нейро|gpt|chatgpt|cursor/,
+    line: "Назовите инструменты из этой строки и для какой задачи вы их открывали. Не добавляйте тех, которых здесь нет.",
+    gap: "Если вы пользуетесь AI-инструментами, добавьте строку: какими и для какой задачи.",
+  },
+  {
+    test: /аналит|гипотез|эксперимент|метрик/,
+    line: "Напишите, какую гипотезу или метрику вы проверяли и что изменилось. Без новых цифр.",
+    gap: "Если вы проверяли гипотезы или смотрели аналитику, добавьте строку про метрику и вывод.",
+  },
+  {
+    test: /b2b|клиент/,
+    line: "Уточните, с какими клиентами вы работали и что для них делали. Название можно оставить как в строке.",
+    gap: "Если у вас есть опыт с клиентами, добавьте строку про тип клиентов и вашу задачу.",
+  },
+  {
+    test: /python|javascript|typescript|\bjs\b/,
+    line: "Напишите, какую задачу вы решали этим языком. Не добавляйте язык, которого нет в строке.",
+    gap: "Если вы писали на Python или JavaScript, добавьте строку про задачу, а не только название языка.",
+  },
+  {
+    test: /коммит|git/,
+    line: "Напишите, что вы делали с коммитами: что фиксировали и как часто. Без новых инструментов.",
+    gap: "Если у вас есть опыт с коммитами, добавьте строку про то, что вы фиксировали в репозитории.",
+  },
+  {
+    test: /проект|стартап|агентств|пет/,
+    line: "Напишите, чей это проект и кто им пользовался. Не повышайте должность и не добавляйте метрик.",
+    gap: "Если у вас есть свой проект или агентство, добавьте строку про него и про пользователей.",
+  },
+  {
+    test: /опыт работ|стаж/,
+    line: "Коротко назовите роль и срок из этой строки, без новых мест работы.",
+    gap: "Если у вас есть релевантный опыт работы, добавьте строку: роль, срок и одна задача.",
+  },
+];
+
+export function hintSlots(
+  resume: string,
+  analysis: Pick<Analysis, "covered" | "partial" | "gaps">,
+): { before: string; requirement: string }[] {
+  const lines = resumeLines(resume);
+  const used = new Set<string>();
+  const seen = new Set<string>();
+  const slots: { before: string; requirement: string }[] = [];
+  const claim = (requirement: string, evidence: string, weakOnly: boolean) => {
+    const key = normalize(requirement);
+    if (!key || seen.has(key)) return;
+    const line = findHintLine(lines, evidence, requirement, used);
+    if (line && weakOnly && !weakLine(line.text, requirement)) return;
+    if (!line && weakOnly) return;
+    if (line) used.add(line.id);
+    seen.add(key);
+    slots.push({ before: line?.text ?? "", requirement });
+  };
+  for (const item of analysis.partial) claim(item.requirement, item.evidence, false);
+  for (const item of analysis.covered) claim(item.requirement, item.evidence, true);
+  for (const item of analysis.gaps) claim(item.requirement, "", false);
+  return slots;
+}
+
+function findHintLine(
+  lines: ResumeLine[],
+  evidence: string,
+  requirement: string,
+  used: Set<string>,
+): ResumeLine | undefined {
+  const needle = normalize(evidence);
+  const free = lines.filter((line) => !used.has(line.id));
+  if (needle.length >= 12) {
+    const quoted = free.find((line) => {
+      const text = normalize(line.text);
+      return text.includes(needle.slice(0, 40)) || needle.includes(text);
+    });
+    if (quoted) return quoted;
+  }
+  return free.find((line) => touchesRequirement(line.text, requirement));
+}
+
+function weakLine(line: string, requirement: string): boolean {
+  const stems = stemsOf(requirement).filter((stem) => !GENERIC_STEMS.has(stem));
+  return !stems.length || !stems.some((stem) => textHasStem(line, stem));
+}
+
+export function unionExplicitCovered(model: Analysis, resume: string, requirements: string[]): Analysis {
+  const local = buildAnalysis(resume, requirements, []);
+  const names = new Set(model.covered.map((item) => normalize(item.requirement)));
+  const extra = local.covered.filter((item) => !names.has(normalize(item.requirement)));
+  if (!extra.length) return model;
+  const covered = [...model.covered, ...extra];
+  const taken = new Set(covered.map((item) => normalize(item.requirement)));
+  return {
+    ...packAnalysis(
+      covered,
+      model.partial.filter((item) => !taken.has(normalize(item.requirement))),
+      model.gaps.filter((item) => !taken.has(normalize(item.requirement))),
+    ),
+    fixes: model.fixes,
+  };
 }
 
 export function linkedRequirement(
@@ -776,10 +911,9 @@ export function parseModelOutput(
   vacancy = "",
 ): Analysis {
   const list = requirements.length ? requirements : inferRequirements(text);
-  const fixes = readFixes(text, resume, list, vacancy).fixes;
-  if (!list.length && !fixes.length) {
+  if (!list.length && !readFixes(text, resume, list, vacancy).fixes.length) {
     logParse("empty checklist", text);
     throw new AnalyzeError(502, BAD_SHAPE, true);
   }
-  return buildAnalysis(resume, list, fixes);
+  return buildAnalysis(resume, list, []);
 }

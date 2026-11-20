@@ -6,6 +6,7 @@ import {
   chatCompletionsUrl,
   gigachatModel,
   httpFailureReason,
+  requirementCacheKey,
   upstreamBodySnippet,
 } from "./gigachat.ts";
 
@@ -59,6 +60,13 @@ describe("chatBudget", () => {
     assert.equal(typeof value, "number");
     assert.equal((value ?? 0) <= 8_000, true);
     armGigachatBudget(0);
+  });
+});
+
+describe("requirementCacheKey", () => {
+  it("matches the same vacancy with different spaces", () => {
+    assert.equal(requirementCacheKey("  Опыт   с данными. "), requirementCacheKey("опыт с данными"));
+    assert.notEqual(requirementCacheKey("опыт с данными"), requirementCacheKey("опыт с клиентами"));
   });
 });
 
