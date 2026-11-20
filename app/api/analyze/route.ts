@@ -1,7 +1,7 @@
 import { AnalyzeError } from "@/lib/errors";
 import { completeAnalysis, completeMoreFixes, listRequirements } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
-import { assembleFixes, buildAnalysis, parseModelOutput, type Analysis } from "@/lib/parse";
+import { assembleFixes, buildAnalysis, parseModelOutput, readFixes, type Analysis } from "@/lib/parse";
 
 export const maxDuration = 120;
 
@@ -34,8 +34,8 @@ export async function POST(request: Request) {
   }
 
   let analysis: Analysis;
+  let text = "";
   try {
-    let text: string;
     try {
       text = await completeAnalysis(resume, vacancy, 0.3, requirements);
     } catch (error) {
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
       text = await completeAnalysis(resume, vacancy, 0.5, requirements);
     }
     try {
-      analysis = parseModelOutput(text, resume, requirements);
+      analysis = parseModelOutput(text, resume, requirements, vacancy);
     } catch (error) {
       if (!(error instanceof AnalyzeError) || !error.retryable || !requirements.length) throw error;
       analysis = buildAnalysis(resume, requirements, []);
@@ -59,7 +59,13 @@ export async function POST(request: Request) {
     : [...analysis.covered, ...analysis.partial, ...analysis.gaps].map((item) => item.requirement);
   if (analysis.fixes.length < 3) {
     const need = 3 - analysis.fixes.length;
-    console.error(`parse fixes kept ${analysis.fixes.length}, refill ${need}`);
+    let reasons: string[] = [];
+    try {
+      reasons = readFixes(text, resume, list, vacancy, true).reasons;
+    } catch {
+      reasons = ["not json"];
+    }
+    console.error(`parse fixes kept ${analysis.fixes.length}, refill ${need}: ${reasons.slice(0, 8).join("; ")}`);
     let more = "";
     try {
       more = await completeMoreFixes(
@@ -68,6 +74,7 @@ export async function POST(request: Request) {
         list,
         analysis.fixes.map((fix) => fix.before),
         need,
+        reasons,
       );
     } catch (error) {
       console.error(`parse fixes refill failed ${error instanceof Error ? error.message : "error"}`);

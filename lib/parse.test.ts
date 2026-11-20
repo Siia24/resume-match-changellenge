@@ -62,7 +62,7 @@ describe("parseModelOutput", () => {
     const analysis = parseModelOutput("Вот разбор:\n```json\n" + raw + "\n```\nГотово.", resume);
     assert.equal(analysis.matchPercent, 50);
     assert.equal(analysis.covered.length, 2);
-    assert.equal(analysis.fixes.length, 3);
+    assert.equal(analysis.fixes.length, 1);
   });
 
   it("drops one ungrounded fix and one ungrounded evidence", () => {
@@ -86,12 +86,8 @@ describe("parseModelOutput", () => {
     );
     assert.equal(analysis.covered.length, 1);
     assert.equal(analysis.gaps.map((item) => item.requirement).join(","), "SQL,Excel");
-    assert.equal(analysis.fixes.length, 3);
     assert.equal(analysis.fixes.some((item) => item.before.includes("30%")), false);
-    assert.equal(
-      analysis.fixes.some((item) => item.before === "скрипты на Python для остатков"),
-      false,
-    );
+    assert.equal(analysis.fixes.some((item) => item.before.includes("бакалавриат")), false);
     assert.equal(analysis.matchPercent, 33);
   });
 
@@ -117,7 +113,7 @@ describe("parseModelOutput", () => {
     const analysis = parseModelOutput(live, resume);
     assert.equal(analysis.covered.length, 1);
     assert.equal(analysis.matchPercent, 100);
-    assert.equal(analysis.fixes.length, 3);
+    assert.equal(analysis.fixes.length, 1);
     assert.match(analysis.matchExplanation, /Закрыто 1 из 1/);
     assert.doesNotMatch(analysis.matchExplanation, /нет пересечения|соответствует/i);
   });
@@ -298,7 +294,7 @@ describe("assembleFixes", () => {
     ],
   });
 
-  it("fills three honest rewrites when the model fixes are all rejected", () => {
+  it("does not invent shuffled lines when the model fixes are rejected", () => {
     const lines: string[] = [];
     const previous = console.error;
     console.error = (message?: unknown) => {
@@ -306,40 +302,74 @@ describe("assembleFixes", () => {
     };
     try {
       const fixes = assembleFixes(resume, vacancy, requirements, [], [badModel]);
-      assert.equal(fixes.length, 3);
-      const joined = fixes.map((item) => `${item.before} ${item.after}`).join(" ");
-      assert.equal(/mvp|внедрила|рекламн/i.test(joined), false);
-      assert.equal(fixes.every((item) => resume.includes(item.before)), true);
+      assert.equal(fixes.length, 0);
     } finally {
       console.error = previous;
     }
     const log = lines.join("\n");
     assert.match(log, /drop fix new claim/);
-    assert.match(log, /parse fixes local [1-3]/);
+    assert.equal(log.includes("parse fixes local"), false);
     assert.equal(log.includes("Косолапова"), false);
   });
 
-  it("keeps a real model fix and lets vacancy words and light verbs through", () => {
-    const good = JSON.stringify({
-      fixes: [
+  it("keeps a real rewrite and drops a shuffle, MVP and a student line", () => {
+    assert.equal(
+      rejectFix(
+        fix(
+          "Пользуюсь Cursor и ChatGPT для прототипов и текстов",
+          "Делаю прототипы в Cursor и пишу тексты с ChatGPT",
+        ),
+        resume,
+        requirements,
+        vacancy,
+      ),
+      null,
+    );
+    assert.equal(
+      rejectFix(
+        fix(
+          "сверки размещений, отчёты по радио и прессе",
+          "Сверяю данные по размещениям и готовлю отчёты по радио и прессе",
+        ),
+        resume,
+        requirements,
+        vacancy,
+      ),
+      null,
+    );
+    assert.equal(
+      rejectFix(
+        fix("Пользуюсь Cursor и ChatGPT для прототипов и текстов", "запускала MVP на Cursor и ChatGPT"),
+        resume,
+        requirements,
+        vacancy,
+      ),
+      "new claim запускала",
+    );
+    assert.equal(
+      rejectFix(
         fix(
           "настраивала Яндекс Метрику на сайте агентства",
           "На сайте агентства настраивала Яндекс Метрику",
         ),
-        fix(
-          "Пользуюсь Cursor и ChatGPT для прототипов и текстов",
-          "Делаю прототипы и тексты в Cursor и ChatGPT",
-        ),
-        fix("сверки размещений, отчёты по радио и прессе", "Веду сверки размещений и отчёты по радио и прессе"),
-      ],
-    });
-    const fixes = assembleFixes(resume, vacancy, requirements, [], [badModel, good]);
-    assert.equal(fixes.length, 3);
-    assert.equal(
-      fixes.some((item) => item.after.startsWith("На сайте агентства")),
-      true,
+        resume,
+        requirements,
+        vacancy,
+      ),
+      "shuffle",
     );
-    assert.equal(rejectFix(fix("Пользуюсь Cursor и ChatGPT для прототипов и текстов", "Для прототипов пользуюсь Cursor, ChatGPT и SQL"), resume, requirements, vacancy), null);
+    assert.equal(
+      rejectFix(
+        fix(
+          "Студентка 3 курса РУДН, направление «Реклама и связи с общественностью»",
+          "Направление «Реклама и связи с общественностью», студентка 3 курса РУДН",
+        ),
+        resume,
+        requirements,
+        vacancy,
+      ),
+      "shuffle",
+    );
   });
 });
 
