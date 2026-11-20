@@ -26,8 +26,14 @@ export async function POST(request: Request) {
   if (invalid) return jsonError(400, invalid);
 
   try {
-    const text = await completeAnalysis(resume, vacancy);
-    return Response.json(parseModelOutput(text, resume));
+    try {
+      const text = await completeAnalysis(resume, vacancy, 0.2);
+      return Response.json(parseModelOutput(text, resume));
+    } catch (error) {
+      if (!(error instanceof AnalyzeError) || !error.retryable) throw error;
+      const text = await completeAnalysis(resume, vacancy, 0);
+      return Response.json(parseModelOutput(text, resume));
+    }
   } catch (error) {
     if (error instanceof AnalyzeError) return jsonError(error.status, error.message);
     console.error("analyze", error instanceof Error ? error.message : "unknown");

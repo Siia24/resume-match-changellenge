@@ -17,15 +17,17 @@ const SYSTEM_PROMPT = `Ты сверяешь резюме с вакансией.
 Шаг 2. Каждый пункт проверь по резюме.
 - Есть в резюме — объект в covered. evidence — дословный фрагмент резюме, без кавычек и без многоточия.
 - Нет в резюме — объект в gaps. Не добавляй требований, которых нет в вакансии.
-Шаг 3. Ровно 3 правки формулировок уже существующих строк.
+Шаг 3. Дай 4 или 5 правок уже существующих строк.
 - before — дословный фрагмент резюме длиннее 12 символов.
-- after — та же мысль, яснее и ближе к словам вакансии. Нельзя добавлять места работы, даты, навыки, цифры и достижения, которых нет в резюме.
+- after — только перефраз этой же строки. Слова вакансии подставляй, если они честно называют то, что уже сказано в строке.
+- Нельзя добавлять навыки, достижения и числа, которых нет в резюме.
+- Нельзя менять должность, место работы и даты. Если в строке «бухгалтер», в after тоже бухгалтер.
 - why — одно короткое предложение, зачем правка.
-Шаг 4. matchPercent — целое от 0 до 100, доля закрытых пунктов. matchExplanation — одна короткая фраза.
+Шаг 4. matchExplanation — одна короткая фраза про чек-лист. Процент посчитает сервер, matchPercent поставь 0.
 
 Ответ — только JSON, без markdown и без текста вокруг:
 {"matchPercent":0,"matchExplanation":"","covered":[{"requirement":"","evidence":""}],"gaps":[{"requirement":""}],"fixes":[{"before":"","after":"","why":""}]}
-В fixes ровно три элемента.`;
+В fixes четыре или пять элементов.`;
 
 type TokenCache = { token: string; expiresAtMs: number };
 
@@ -243,7 +245,7 @@ function chatError(status: number, text: string): AnalyzeError {
   return new AnalyzeError(502, "Не удалось получить разбор. Попробуйте ещё раз.");
 }
 
-async function postChat(token: string, resume: string, vacancy: string) {
+async function postChat(token: string, resume: string, vacancy: string, temperature: number) {
   return requestJson(
     chatCompletionsUrl(),
     {
@@ -257,8 +259,8 @@ async function postChat(token: string, resume: string, vacancy: string) {
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: `Резюме:\n${resume.trim()}\n\nВакансия:\n${vacancy.trim()}` },
       ],
-      temperature: 0.2,
-      max_tokens: 2048,
+      temperature,
+      max_tokens: 3072,
       stream: false,
     }),
     50_000,
@@ -276,16 +278,20 @@ function readContent(json: unknown): { content: string; truncated: boolean } {
   };
 }
 
-export async function completeAnalysis(resume: string, vacancy: string): Promise<string> {
+export async function completeAnalysis(
+  resume: string,
+  vacancy: string,
+  temperature = 0.2,
+): Promise<string> {
   requireAuthKey();
   let token = await getAccessToken();
   let response: UpstreamBody;
   try {
-    response = await postChat(token, resume, vacancy);
+    response = await postChat(token, resume, vacancy, temperature);
     if (response.status === 401) {
       cached = null;
       token = await getAccessToken();
-      response = await postChat(token, resume, vacancy);
+      response = await postChat(token, resume, vacancy, temperature);
     }
   } catch (error) {
     if (error instanceof AnalyzeError) throw error;
