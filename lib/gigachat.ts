@@ -17,11 +17,6 @@ const REQUIREMENTS_PROMPT = `Выпиши требования вакансии 
 Не дроби один навык на несколько и не добавляй требований, которых нет в тексте.
 Только JSON: ["требование"]`;
 
-const HINT_PROMPT = `Подскажите, что дописать в резюме своими словами. Не пишите готовую строку за человека и не выдумывайте факты, цифры и названия.
-Одно или два коротких предложения, обращение на «вы», вопрос или указание. Без канцелярита.
-Если подсказать нечего, верните одно слово: НЕТ.
-Только текст подсказки.`;
-
 const MATCH_PROMPT = `Сопоставь требования и резюме. Ничего не выдумывай.
 Для каждого требования укажи status: covered, partial или gap.
 evidence — дословная цитата из резюме для covered и partial. Для gap оставь evidence пустым.
@@ -391,26 +386,6 @@ const requirementCache = new Map<string, { items: string[]; raw: string }>();
 
 export function requirementCacheKey(vacancy: string): string {
   return createHash("sha256").update(normalize(vacancy)).digest("hex");
-}
-
-export async function askHint(
-  before: string,
-  requirement: string,
-  vacancy: string,
-  timeoutMs = 12_000,
-): Promise<string> {
-  const subject = before.trim()
-    ? `Строка резюме:\n${before}\n\nТребование:\n${requirement}`
-    : `Этого требования в резюме нет.\nТребование:\n${requirement}\nНачните с «Если у вас есть опыт…», только если такой опыт мог быть.`;
-  return completeMessages(
-    [
-      { role: "system", content: HINT_PROMPT },
-      { role: "user", content: `${subject}\n\nВакансия:\n${vacancy.trim()}` },
-    ],
-    0,
-    220,
-    timeoutMs,
-  );
 }
 
 export async function listRequirements(
