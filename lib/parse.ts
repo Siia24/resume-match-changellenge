@@ -118,7 +118,8 @@ const CLAIM_STEMS = ["запус", "разра", "внедр", "дости", "э
 const LIGHT_STEMS = /^(дела|веду|вела|наст|пишу|писа|смотр|рабо|исп|поль|помо|зани|отве|гото|пров|соби|свер|сост|анал|созда|напис|веден|подго)/;
 const TITLE_STEMS = ["менед", "директ", "руковод", "продакт", "junior", "senior"];
 
-const CLICHE = /имеется опыт|осуществля|достигнут|высокая эффективность/;
+const CLICHE =
+  /имеется опыт|осуществля|достигнут|высокая эффективность|проявля[а-я]* предпринимательск|предпринимательск[а-я]* коммуникац|ориентир[а-я]* на достижение результата/;
 
 function textHasStem(text: string, stem: string): boolean {
   const hay = normalize(text);
@@ -299,7 +300,15 @@ export function buildAnalysis(
     else if (match.status === "partial") partial.push({ requirement, evidence: match.evidence });
     else gaps.push({ requirement });
   }
-  const total = requirements.length;
+  return { ...packAnalysis(covered, partial, gaps), fixes: fixes.slice(0, 3) };
+}
+
+function packAnalysis(
+  covered: Analysis["covered"],
+  partial: Analysis["partial"],
+  gaps: Analysis["gaps"],
+): Analysis {
+  const total = covered.length + partial.length + gaps.length;
   const matchPercent =
     total === 0 ? 0 : Math.round((100 * (covered.length + 0.5 * partial.length)) / total);
   return {
@@ -308,8 +317,65 @@ export function buildAnalysis(
     covered,
     partial,
     gaps,
-    fixes: fixes.slice(0, 3),
+    fixes: [],
   };
+}
+
+function takeMatch(
+  resume: string,
+  requirement: string,
+  covered: Analysis["covered"],
+  partial: Analysis["partial"],
+  gaps: Analysis["gaps"],
+) {
+  const match = matchRequirement(resume, requirement);
+  if (match.status === "covered") covered.push({ requirement, evidence: match.evidence });
+  else if (match.status === "partial") partial.push({ requirement, evidence: match.evidence });
+  else gaps.push({ requirement });
+}
+
+export function readModelMatch(text: string, resume: string, requirements: string[]): Analysis | null {
+  let raw: unknown;
+  try {
+    raw = extractJson(text);
+  } catch {
+    return null;
+  }
+  const obj = asRecord(raw);
+  const rows = Array.isArray(obj?.items) ? obj.items : [];
+  if (!rows.length) return null;
+  const listed = requirements.length
+    ? requirements
+    : requirementTexts(rows).filter((item, index, all) => all.findIndex((other) => normalize(other) === normalize(item)) === index);
+  if (!listed.length) return null;
+  const covered: Analysis["covered"] = [];
+  const partial: Analysis["partial"] = [];
+  const gaps: Analysis["gaps"] = [];
+  for (const requirement of listed) {
+    const row = rows
+      .map((item) => asRecord(item))
+      .find((item) => {
+        const name = textField(item?.requirement, 300);
+        if (!name) return false;
+        const left = normalize(name);
+        const right = normalize(requirement);
+        return left === right || left.includes(right) || right.includes(left);
+      });
+    const status = textField(row?.status, 20);
+    const evidence = textField(row?.evidence, 500) ?? "";
+    const quoted = Boolean(evidence) && textIncludesQuote(evidence, resume);
+    if ((status === "covered" || status === "partial") && quoted) {
+      if (status === "covered") covered.push({ requirement, evidence });
+      else partial.push({ requirement, evidence });
+      continue;
+    }
+    if (status === "gap") {
+      gaps.push({ requirement });
+      continue;
+    }
+    takeMatch(resume, requirement, covered, partial, gaps);
+  }
+  return packAnalysis(covered, partial, gaps);
 }
 
 export function rejectFix(
@@ -335,6 +401,7 @@ export function rejectFix(
     if (!beforeAll.includes(num)) return `new number ${num}`;
   }
   if (tokenBag(before) === tokenBag(after)) return "shuffle";
+  if (switchedPerson(before, after)) return "person";
   if (stemBag(before) === stemBag(after)) return "tense";
   if (CLICHE.test(normalize(after))) return "cliche";
   const allowedText = `${requirements.join(" ")}\n${vacancy}`;
@@ -369,6 +436,17 @@ export function rejectFix(
     return "off vacancy";
   }
   return null;
+}
+
+function firstPerson(text: string): boolean {
+  const n = normalize(text);
+  if (/(^|[^а-я])я([^а-я]|$)/.test(n)) return true;
+  return n.split(/[^a-zа-я0-9]+/i).some((token) => /(?:аю|яю|ую|ала|яла|ила|ела|аем)$/.test(token));
+}
+
+function switchedPerson(before: string, after: string): boolean {
+  if (!firstPerson(before) || firstPerson(after)) return false;
+  return /(?:реализован|проведен|осуществлен|выполнен|создан|внедрен|запущен|разработан)/.test(normalize(after));
 }
 
 function isDateNumber(num: string, text: string): boolean {
@@ -449,14 +527,44 @@ export function bestRequirement(line: string, requirements: string[]): string {
   return linkedRequirement(line, requirements) ?? requirements[0] ?? "требование вакансии";
 }
 
-export function lineAnswer(text: string): { after: string; why: string } {
-  try {
-    const raw = extractJson(text);
-    const obj = asRecord(raw);
-    return { after: textField(obj?.after, 500) ?? "", why: textField(obj?.why, 300) ?? "" };
-  } catch {
-    return { after: "", why: "" };
+function isRefusal(text: string): boolean {
+  const n = normalize(text);
+  if (/не подходит|не связана/.test(n)) return true;
+  return n === "нет" || n === "no";
+}
+
+function cleanFixLine(text: string, source: string): string {
+  let line = text.trim().replace(/^[«»"'“”]+|[«»"'“”]+$/g, "").trim();
+  line = line.replace(/^(?:[-•*]|\d+[.)])\s+/, "").trim();
+  line = line.replace(/^(?:after|новая формулировка|правка)\s*:\s*/i, "").trim();
+  line = line.replace(/^[«»"'“”]+|[«»"'“”]+$/g, "").trim();
+  const colon = line.indexOf(":");
+  if (colon > 0) {
+    const label = line.slice(0, colon).trim();
+    if (wordCount(label) > 0 && wordCount(label) < 5 && !normalize(source).includes(normalize(label))) {
+      line = line.slice(colon + 1).trim();
+    }
   }
+  return line.replace(/^[«»"'“”]+|[«»"'“”]+$/g, "").trim();
+}
+
+export function lineAnswer(text: string, source = ""): { after: string; why: string } {
+  const raw = text.trim();
+  if (!raw || isRefusal(raw)) return { after: "", why: "" };
+  try {
+    const parsed = extractJson(raw);
+    const obj = asRecord(parsed);
+    if (obj && "after" in obj) {
+      const after = textField(obj.after, 500) ?? "";
+      if (!after || isRefusal(after)) return { after: "", why: "" };
+      return { after: cleanFixLine(after, source), why: "" };
+    }
+  } catch {
+    // Обычная фраза, не JSON.
+  }
+  const lines = raw.split(/\n+/).map((line) => cleanFixLine(line, source)).filter(Boolean);
+  const after = lines.find((line) => !isRefusal(line)) ?? "";
+  return { after: isRefusal(after) ? "" : after, why: "" };
 }
 
 export function linkedRequirement(

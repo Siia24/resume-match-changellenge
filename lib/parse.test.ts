@@ -4,9 +4,11 @@ import { AnalyzeError } from "./errors.ts";
 import {
   assembleFixes,
   isJunkLine,
+  lineAnswer,
   normalize,
   parseModelOutput,
   readFixes,
+  readModelMatch,
   readRequirementList,
   rejectFix,
   resumeLines,
@@ -623,5 +625,104 @@ describe("textIncludesQuote", () => {
       ),
       null,
     );
+  });
+});
+
+describe("lineAnswer", () => {
+  const radio = "Ежемесячно закрывала радиоразмещения Сбера и сверяла выходы.";
+  const clients = "Параллельно обслуживала три типа клиентов — ПАО Сбербанк (192 РК).";
+
+  it("reads the three plain answers from production", () => {
+    const achievement = lineAnswer(
+      "«Достижение результата: ежемесячно закрывала радиоразмещения Сбера…»",
+      radio,
+    );
+    assert.equal(achievement.after, "ежемесячно закрывала радиоразмещения Сбера…");
+    assert.equal(achievement.why, "");
+
+    const service = lineAnswer(
+      "«Работа с клиентами: параллельно обслуживала три типа клиентов — ПАО Сбербанк (192 РК)…, проявляя предпринимательское мышление…»",
+      clients,
+    );
+    assert.equal(
+      service.after,
+      "параллельно обслуживала три типа клиентов — ПАО Сбербанк (192 РК)…, проявляя предпринимательское мышление…",
+    );
+
+    assert.equal(
+      lineAnswer("«После рассмотрения данной строки… не подходит… after:»", radio).after,
+      "",
+    );
+  });
+
+  it("keeps a label that is already in the line and still reads JSON", () => {
+    const source = "Достижение результата: закрыла план по радио.";
+    assert.match(lineAnswer("Достижение результата: закрыла план по радио", source).after, /Достижение результата/);
+    assert.equal(lineAnswer('{"after":"НЕТ","why":"нет"}', source).after, "");
+    assert.equal(lineAnswer("НЕТ", source).after, "");
+    assert.match(lineAnswer('{"after":"Сверяю данные по радио"}', radio).after, /Сверяю данные/);
+  });
+});
+
+describe("plain fix filter", () => {
+  it("drops glued self-praise and a switch away from the first person", () => {
+    const before = "Параллельно обслуживала три типа клиентов ПАО Сбербанк";
+    const requirements = ["предпринимательское мышление", "предпринимательская коммуникация", "достижение результата"];
+    assert.equal(
+      rejectFix(
+        fix(before, "Параллельно обслуживала три типа клиентов ПАО Сбербанк, проявляя предпринимательское мышление"),
+        before,
+        requirements,
+        "предпринимательское мышление",
+      ),
+      "cliche",
+    );
+    assert.equal(
+      rejectFix(
+        fix(before, "Параллельно обслуживала три типа клиентов и предпринимательскую коммуникацию"),
+        before,
+        requirements,
+        "коммуникация",
+      ),
+      "cliche",
+    );
+    assert.equal(
+      rejectFix(
+        fix(before, "Параллельно обслуживала три типа клиентов, ориентируясь на достижение результата"),
+        before,
+        requirements,
+        "достижение результата",
+      ),
+      "cliche",
+    );
+    assert.equal(
+      rejectFix(
+        fix("Реализовала проект агентства для клиентов", "Реализован проект агентства для клиентов"),
+        "Реализовала проект агентства для клиентов",
+        ["проект"],
+        "проект",
+      ),
+      "person",
+    );
+  });
+});
+
+describe("readModelMatch", () => {
+  it("scores quoted coverage and falls back when the quote is not in the resume", () => {
+    const analysis = readModelMatch(
+      JSON.stringify({
+        items: [
+          { requirement: "работа с данными", status: "covered", evidence: "сверки размещений" },
+          { requirement: "MVP", status: "gap", evidence: "" },
+          { requirement: "AI", status: "covered", evidence: "запустила MVP" },
+        ],
+      }),
+      "Вела сверки размещений и отчёты.",
+      ["работа с данными", "MVP", "AI"],
+    );
+    assert.equal(analysis?.covered.length, 1);
+    assert.equal(analysis?.gaps.length, 2);
+    assert.equal(analysis?.matchPercent, 33);
+    assert.equal(readModelMatch("не json", "резюме", ["данные"]), null);
   });
 });
