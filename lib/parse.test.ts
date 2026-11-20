@@ -3,8 +3,8 @@ import { describe, it } from "node:test";
 import { AnalyzeError } from "./errors.ts";
 import {
   assembleFixes,
-  buildAnalysis,
   isJunkLine,
+  hintKind,
   hintSlots,
   hintTemplate,
   lineAnswer,
@@ -732,19 +732,51 @@ describe("readModelMatch", () => {
 });
 
 describe("hints", () => {
-  it("orders a weak line before a gap and fills a data template", () => {
-    const resume = "Вела сверки размещений каждый месяц.";
-    const requirements = ["работа с данными", "AI-инструменты"];
-    const analysis = buildAnalysis(resume, requirements);
-    const slots = hintSlots(resume, analysis);
+  it("classifies the mismatched production requirements", () => {
+    assert.equal(hintKind("Английский B2"), "english");
+    assert.match(hintTemplate("Английский B2"), /уровень языка/);
+    assert.equal(hintKind("Опыт работы больше 1 года"), "tenure");
+    assert.match(hintTemplate("Опыт работы больше 1 года"), /даты каждого места/);
+    assert.equal(hintKind("коммиты и мерж-реквесты"), "git");
+    assert.match(hintTemplate("коммиты и мерж-реквесты"), /GitHub/);
+    assert.equal(hintKind("Коммуникабельность"), "communication");
+    assert.equal(hintKind("опыт создания прототипов"), "prototype");
+    assert.equal(hintKind("Python и SQL"), "code");
+    assert.equal(hintKind("HR-tech и B2B"), "domain");
+    for (const requirement of [
+      "Английский B2",
+      "Опыт работы больше 1 года",
+      "коммиты и мерж-реквесты",
+      "Коммуникабельность",
+    ]) {
+      const hint = hintTemplate(requirement);
+      assert.doesNotMatch(hint, /\?|большой плюс|сопроводительн|Без новых/);
+    }
+  });
+
+  it("shows a line only for a partial and keeps three different types", () => {
+    const resume = "Вела сверку ~367 строк каждый месяц.\nПользуюсь Cursor.";
+    const slots = hintSlots(resume, {
+      partial: [{ requirement: "работа с данными", evidence: "Вела сверку ~367 строк" }],
+      gaps: [
+        { requirement: "Английский B2" },
+        { requirement: "Опыт работы больше 1 года" },
+        { requirement: "желателен опыт прототипов" },
+        { requirement: "коммиты и мерж-реквесты" },
+      ],
+    });
+    assert.equal(slots.length, 3);
+    assert.match(slots[0]?.before ?? "", /сверку/);
     assert.match(slots[0]?.requirement ?? "", /данн/);
-    assert.match(slots[0]?.before ?? "", /сверки/);
-    assert.equal(slots.at(-1)?.before, "");
-    assert.match(slots.at(-1)?.requirement ?? "", /AI/);
-    const hint = hintTemplate("Работа с данными", slots[0]?.before ?? "");
-    assert.match(hint, /данные/);
-    assert.equal(/\d/.test(hint), false);
-    assert.match(hintTemplate("коммиты в git", ""), /Если у вас есть/);
+    assert.equal(slots[1]?.before, "");
+    assert.equal(slots[2]?.before, "");
+    assert.deepEqual(slots.slice(1).map((slot) => hintKind(slot.requirement)), ["english", "tenure"]);
+    const commits = hintSlots("Вела сверку ~367 строк.", {
+      partial: [],
+      gaps: [{ requirement: "коммиты и мерж-реквесты" }],
+    });
+    assert.equal(commits[0]?.before, "");
+    assert.equal(hintKind(commits[0]?.requirement ?? ""), "git");
   });
 
   it("drops invented numbers, unknown names and refusals", () => {

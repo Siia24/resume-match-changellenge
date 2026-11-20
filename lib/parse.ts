@@ -580,109 +580,109 @@ export function rejectHint(hint: string, source: string): string | null {
   return null;
 }
 
-export function hintTemplate(requirement: string, before: string): string {
-  const kind = normalize(requirement);
-  const line = Boolean(before.trim());
-  const row = HINT_TEMPLATES.find((item) => item.test.test(kind));
-  const text = row ? (line ? row.line : row.gap) : line
-    ? `Опишите своими словами, как эта строка закрывает требование «${requirement}». Не добавляйте новых фактов.`
-    : `Если у вас есть опыт по пункту «${requirement}», добавьте отдельную строку про него.`;
-  return text.split(/(?<=[.!?])\s+/).slice(0, 2).join(" ");
+export type HintKind =
+  | "english"
+  | "git"
+  | "code"
+  | "ai"
+  | "prototype"
+  | "project"
+  | "analytics"
+  | "data"
+  | "domain"
+  | "communication"
+  | "tenure"
+  | "other";
+
+const HINT_KINDS: { kind: HintKind; test: RegExp }[] = [
+  { kind: "english", test: /английск|english|\bb[12]\b|\bc[12]\b|иностранн/ },
+  { kind: "git", test: /github|gitlab|\bgit\b|коммит|мерж/ },
+  { kind: "code", test: /python|javascript|typescript|\bjs\b|\bsql\b|\bjava\b|golang|программир/ },
+  { kind: "ai", test: /\bai\b|нейро|\bgpt\b|chatgpt|cursor|\bllm\b/ },
+  { kind: "prototype", test: /прототип|\bmvp\b/ },
+  { kind: "project", test: /стартап|пет проект|свой проект|агентств/ },
+  { kind: "analytics", test: /аналит|гипотез|метрик|a\/b|аб тест|эксперимент/ },
+  { kind: "data", test: /данн|сверк|excel|таблиц/ },
+  { kind: "domain", test: /b2b|hr tech|hrtech|edtech|эдтех/ },
+  { kind: "communication", test: /коммуника|клиент|переговор|общен/ },
+  { kind: "tenure", test: /опыт работ|стаж|мест[ао] работы/ },
+];
+
+const HINT_TEXT: Record<HintKind, string> = {
+  english: "Добавьте уровень языка и чем подтверждён: сертификат, учёба, работа.",
+  git: "Если вы вели проект на GitHub, дайте ссылку и напишите, сколько PR смержили.",
+  code: "Напишите, на каком языке и какую задачу вы решали.",
+  ai: "Напишите, какими AI-инструментами вы пользуетесь и для какой задачи.",
+  prototype: "Напишите, какой прототип вы собирали и кто им пользовался.",
+  project: "Напишите, какой свой проект или стартап вы вели и кто им пользовался.",
+  analytics: "Напишите, какую метрику или гипотезу вы проверяли и что из этого вышло.",
+  data: "Назовите, что именно вы сверяли или считали и что это дало. Слово «данные» можно поставить в начало строки.",
+  domain: "Напишите отрасль, в которой вы работали: B2B, HR-tech или EdTech, и какая была задача.",
+  communication: "Напишите, с кем вы общались и какой был результат: клиент, команда или подрядчик.",
+  tenure: "Укажите даты каждого места работы; стажировки и свой проект тоже считаются.",
+  other: "Добавьте одну строку, где этот пункт виден сразу: что вы делали и какой был результат.",
+};
+
+export function hintKind(requirement: string): HintKind {
+  const text = normalize(requirement);
+  return HINT_KINDS.find((item) => item.test.test(text))?.kind ?? "other";
 }
 
-const HINT_TEMPLATES: { test: RegExp; line: string; gap: string }[] = [
-  {
-    test: /данн|сверк|excel|таблиц/,
-    line: "Назовите, что именно проверяли и что это дало: сколько расхождений нашли или как ускорили закрытие месяца. Слово «данные» можно вынести в начало.",
-    gap: "Если у вас есть опыт работы с данными, добавьте строку про то, что считали и какой был результат.",
-  },
-  {
-    test: /прототип/,
-    line: "Напишите, что именно собирали как прототип и для кого. Не придумывайте новый продукт.",
-    gap: "Если у вас есть опыт прототипов, добавьте строку про то, что собирали и кто этим пользовался.",
-  },
-  {
-    test: /\bai\b|нейро|gpt|chatgpt|cursor/,
-    line: "Назовите инструменты из этой строки и для какой задачи вы их открывали. Не добавляйте тех, которых здесь нет.",
-    gap: "Если вы пользуетесь AI-инструментами, добавьте строку: какими и для какой задачи.",
-  },
-  {
-    test: /аналит|гипотез|эксперимент|метрик/,
-    line: "Напишите, какую гипотезу или метрику вы проверяли и что изменилось. Без новых цифр.",
-    gap: "Если вы проверяли гипотезы или смотрели аналитику, добавьте строку про метрику и вывод.",
-  },
-  {
-    test: /b2b|клиент/,
-    line: "Уточните, с какими клиентами вы работали и что для них делали. Название можно оставить как в строке.",
-    gap: "Если у вас есть опыт с клиентами, добавьте строку про тип клиентов и вашу задачу.",
-  },
-  {
-    test: /python|javascript|typescript|\bjs\b/,
-    line: "Напишите, какую задачу вы решали этим языком. Не добавляйте язык, которого нет в строке.",
-    gap: "Если вы писали на Python или JavaScript, добавьте строку про задачу, а не только название языка.",
-  },
-  {
-    test: /коммит|git/,
-    line: "Напишите, что вы делали с коммитами: что фиксировали и как часто. Без новых инструментов.",
-    gap: "Если у вас есть опыт с коммитами, добавьте строку про то, что вы фиксировали в репозитории.",
-  },
-  {
-    test: /проект|стартап|агентств|пет/,
-    line: "Напишите, чей это проект и кто им пользовался. Не повышайте должность и не добавляйте метрик.",
-    gap: "Если у вас есть свой проект или агентство, добавьте строку про него и про пользователей.",
-  },
-  {
-    test: /опыт работ|стаж/,
-    line: "Коротко назовите роль и срок из этой строки, без новых мест работы.",
-    gap: "Если у вас есть релевантный опыт работы, добавьте строку: роль, срок и одна задача.",
-  },
-];
+export function desirableRequirement(requirement: string): boolean {
+  return /желательн|плюсом|приветств|преимущ|необязательн/.test(normalize(requirement));
+}
+
+export function hintTemplate(requirement: string): string {
+  return HINT_TEXT[hintKind(requirement)];
+}
 
 export function hintSlots(
   resume: string,
-  analysis: Pick<Analysis, "covered" | "partial" | "gaps">,
+  analysis: Pick<Analysis, "partial" | "gaps">,
 ): { before: string; requirement: string }[] {
-  const lines = resumeLines(resume);
+  const ranked = [
+    ...analysis.partial.map((item) => ({
+      before: lineForPartial(resume, item.evidence, item.requirement),
+      requirement: item.requirement,
+    })),
+    ...analysis.gaps
+      .filter((item) => !desirableRequirement(item.requirement))
+      .map((item) => ({ before: "", requirement: item.requirement })),
+    ...analysis.gaps
+      .filter((item) => desirableRequirement(item.requirement))
+      .map((item) => ({ before: "", requirement: item.requirement })),
+  ];
   const used = new Set<string>();
-  const seen = new Set<string>();
   const slots: { before: string; requirement: string }[] = [];
-  const claim = (requirement: string, evidence: string, weakOnly: boolean) => {
-    const key = normalize(requirement);
-    if (!key || seen.has(key)) return;
-    const line = findHintLine(lines, evidence, requirement, used);
-    if (line && weakOnly && !weakLine(line.text, requirement)) return;
-    if (!line && weakOnly) return;
-    if (line) used.add(line.id);
-    seen.add(key);
-    slots.push({ before: line?.text ?? "", requirement });
-  };
-  for (const item of analysis.partial) claim(item.requirement, item.evidence, false);
-  for (const item of analysis.covered) claim(item.requirement, item.evidence, true);
-  for (const item of analysis.gaps) claim(item.requirement, "", false);
+  for (const slot of ranked) {
+    if (slots.length >= 3) break;
+    const kind = hintKind(slot.requirement);
+    if (used.has(kind)) continue;
+    used.add(kind);
+    slots.push(slot);
+  }
   return slots;
 }
 
-function findHintLine(
-  lines: ResumeLine[],
-  evidence: string,
-  requirement: string,
-  used: Set<string>,
-): ResumeLine | undefined {
+function lineForPartial(resume: string, evidence: string, requirement: string): string {
+  const lines = resumeLines(resume);
   const needle = normalize(evidence);
-  const free = lines.filter((line) => !used.has(line.id));
-  if (needle.length >= 12) {
-    const quoted = free.find((line) => {
+  if (needle.length >= 8) {
+    const quoted = lines.find((line) => {
       const text = normalize(line.text);
-      return text.includes(needle.slice(0, 40)) || needle.includes(text);
+      return (text.length >= 8 && needle.includes(text)) || text.includes(needle.slice(0, 40));
     });
-    if (quoted) return quoted;
+    if (quoted) return quoted.text;
   }
-  return free.find((line) => touchesRequirement(line.text, requirement));
-}
-
-function weakLine(line: string, requirement: string): boolean {
   const stems = stemsOf(requirement).filter((stem) => !GENERIC_STEMS.has(stem));
-  return !stems.length || !stems.some((stem) => textHasStem(line, stem));
+  if (!stems.length) return "";
+  let best: { text: string; score: number } | null = null;
+  for (const line of lines) {
+    const score = stems.filter((stem) => textHasStem(line.text, stem)).length;
+    if (!best || score > best.score) best = { text: line.text, score };
+  }
+  if (!best || best.score < 1 || best.score * 2 < stems.length) return "";
+  return best.text;
 }
 
 export function unionExplicitCovered(model: Analysis, resume: string, requirements: string[]): Analysis {

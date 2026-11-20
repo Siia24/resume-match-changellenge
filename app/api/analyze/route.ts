@@ -1,20 +1,11 @@
 import { AnalyzeError } from "@/lib/errors";
-import {
-  armGigachatBudget,
-  chatBudget,
-  askHint,
-  httpFailureReason,
-  listRequirements,
-  matchVacancy,
-} from "@/lib/gigachat";
+import { armGigachatBudget, chatBudget, listRequirements, matchVacancy } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
 import {
   buildAnalysis,
   hintSlots,
   hintTemplate,
-  lineAnswer,
   readModelMatch,
-  rejectHint,
   unionExplicitCovered,
   type Analysis,
 } from "@/lib/parse";
@@ -78,8 +69,11 @@ export async function POST(request: Request) {
 
   let preview = await modelAnalysis(resume, vacancy, requirements);
   if (!preview) preview = buildAnalysis(resume, requirements, []);
-  armGigachatBudget(25_000);
-  const fixes = await collectHints(hintSlots(resume, preview).slice(0, 3), vacancy);
+  const fixes = hintSlots(resume, preview).map((slot) => ({
+    before: slot.before,
+    requirement: slot.requirement,
+    hint: hintTemplate(slot.requirement),
+  }));
   const analysis: Analysis = { ...preview, fixes };
   return Response.json(debug ? { ...analysis, debug: { calls, dropped, refill } } : analysis);
 
@@ -105,55 +99,6 @@ export async function POST(request: Request) {
       if (!(error instanceof AnalyzeError)) throw error;
       console.error("gigachat analysis", error.message);
       return null;
-    }
-  }
-
-  async function collectHints(slots: { before: string; requirement: string }[], role: string) {
-    const accepted: Analysis["fixes"] = [];
-    for (const [index, slot] of slots.entries()) {
-      const timeout = chatBudget(12_000);
-      let hint = "";
-      if (timeout) {
-        let outcome = await ask(slot, index, timeout, role);
-        if (outcome.status === 429) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          const retry = chatBudget(12_000);
-          if (retry) outcome = await ask(slot, index, retry, role);
-        }
-        const http = httpFailureReason(outcome.status);
-        if (http || (outcome.status === 0 && outcome.error)) {
-          dropped.push({ before: slot.before, after: "", why: "", reason: http ?? outcome.error });
-        } else if (!outcome.hint) {
-          dropped.push({ before: slot.before, after: "", why: "", reason: outcome.reason || "empty" });
-        } else {
-          hint = outcome.hint;
-        }
-      }
-      if (!hint) hint = hintTemplate(slot.requirement, slot.before);
-      accepted.push({ before: slot.before, requirement: slot.requirement, hint });
-    }
-    return accepted;
-  }
-
-  async function ask(
-    slot: { before: string; requirement: string },
-    index: number,
-    timeout: number,
-    role: string,
-  ) {
-    const started = Date.now();
-    const name = `hint_${index + 1}`;
-    try {
-      const raw = await askHint(slot.before, slot.requirement, role, timeout);
-      const answer = lineAnswer(raw, slot.before);
-      calls.push({ name, ms: Date.now() - started, status: 200, error: "", raw });
-      const reason = rejectHint(answer.after, `${slot.before}\n${role}\n${slot.requirement}`);
-      return { status: 200, error: "", hint: reason ? "" : answer.after, reason: reason ?? "" };
-    } catch (error) {
-      const failed = failedCall(name, started, error);
-      calls.push(failed);
-      console.error(`parse hint ${name} ${failed.error}`);
-      return { status: failed.status, error: failed.error, hint: "", reason: "" };
     }
   }
 }
