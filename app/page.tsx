@@ -1,6 +1,13 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type DragEvent, type FormEvent } from "react";
+import {
+  ExtractError,
+  MAX_RESUME_FILE_BYTES,
+  RESUME_FILE_TOO_BIG,
+  extractResumeText,
+  extractedResumeError,
+} from "@/lib/extract";
 import { YM_GOALS } from "@/lib/goals";
 import { MAX_INPUT_CHARS, inputError } from "@/lib/limits";
 import { reachGoal, trackResumeEntered } from "@/lib/metrika";
@@ -10,15 +17,50 @@ export default function HomePage() {
   const [resume, setResume] = useState("");
   const [vacancy, setVacancy] = useState("");
   const [loading, setLoading] = useState(false);
+  const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
+  const [fileError, setFileError] = useState("");
   const [result, setResult] = useState<Analysis | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const readingRef = useRef(false);
+
+  async function readResume(file: File) {
+    if (readingRef.current) return;
+    readingRef.current = true;
+    setReading(true);
+    setFileError("");
+    setError("");
+    try {
+      if (file.size > MAX_RESUME_FILE_BYTES) {
+        setFileError(RESUME_FILE_TOO_BIG);
+        return;
+      }
+      const text = await extractResumeText(file.name, new Uint8Array(await file.arrayBuffer()));
+      const problem = extractedResumeError(text);
+      if (text.trim()) {
+        setResume(text);
+        trackResumeEntered(text);
+        reachGoal(YM_GOALS.uploadResume);
+      }
+      setFileError(problem ?? "");
+    } catch (caught) {
+      setFileError(
+        caught instanceof ExtractError
+          ? caught.message
+          : "Не удалось прочитать файл. Проверьте, что это PDF, DOCX или TXT.",
+      );
+    } finally {
+      readingRef.current = false;
+      setReading(false);
+    }
+  }
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     const invalid = inputError(resume, vacancy);
     if (invalid) {
+      setFileError("");
       setError(invalid);
       setResult(null);
       return;
@@ -26,6 +68,7 @@ export default function HomePage() {
 
     setLoading(true);
     setError("");
+    setFileError("");
     setResult(null);
     setCopied(null);
     try {
@@ -76,7 +119,8 @@ export default function HomePage() {
         Разбор резюме под вакансию
       </h1>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-600 sm:text-base">
-        Вставьте резюме и вакансию. Покажем совпадение, пробелы и три правки формулировок.
+        Вставьте резюме и вакансию или загрузите резюме файлом. Покажем совпадение, пробелы и
+        три правки формулировок.
       </p>
 
       <form onSubmit={onSubmit} className="mt-6">
@@ -86,9 +130,13 @@ export default function HomePage() {
             label="Резюме"
             value={resume}
             placeholder="Опыт, навыки, образование — как в резюме, обычным текстом."
+            hint="PDF, DOCX или TXT, до 5 МБ"
+            reading={reading}
+            onFile={(file) => void readResume(file)}
             onChange={(value) => {
               setResume(value);
               trackResumeEntered(value);
+              setFileError("");
             }}
           />
           <Field
@@ -103,7 +151,7 @@ export default function HomePage() {
         <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || reading}
             className="inline-flex h-11 items-center justify-center rounded-md bg-stone-900 px-5 text-sm font-medium text-white disabled:opacity-60"
           >
             {loading ? "Разбираем…" : "Разобрать"}
@@ -113,9 +161,9 @@ export default function HomePage() {
           </p>
         </div>
 
-        {error ? (
+        {fileError || error ? (
           <p role="alert" className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-            {error}
+            {fileError || error}
           </p>
         ) : null}
       </form>
@@ -192,19 +240,79 @@ function Field({
   value,
   placeholder,
   onChange,
+  onFile,
+  reading = false,
+  hint,
 }: {
   id: string;
   label: string;
   value: string;
   placeholder: string;
   onChange: (value: string) => void;
+  onFile?: (file: File) => void;
+  reading?: boolean;
+  hint?: string;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
   const over = value.length > MAX_INPUT_CHARS;
+
+  function hasFiles(event: DragEvent<HTMLElement>) {
+    return Array.from(event.dataTransfer.types).includes("Files");
+  }
+
+  function onDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!onFile || reading || !hasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDragOver(true);
+  }
+
+  function onDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setDragOver(false);
+  }
+
+  function onDrop(event: DragEvent<HTMLDivElement>) {
+    if (!onFile) return;
+    event.preventDefault();
+    setDragOver(false);
+    if (reading) return;
+    const file = event.dataTransfer.files[0];
+    if (file) onFile(file);
+  }
+
   return (
-    <div>
-      <label htmlFor={id} className="text-sm font-medium">
-        {label}
-      </label>
+    <div onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      <div className="flex items-baseline justify-between gap-3 md:justify-start">
+        <label htmlFor={id} className="text-sm font-medium">
+          {label}
+        </label>
+        {onFile ? (
+          <>
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={reading}
+              className="text-sm text-stone-500 underline decoration-stone-300 underline-offset-2 hover:text-stone-700 disabled:opacity-60"
+            >
+              {reading ? "Читаем файл…" : "Загрузить файл"}
+            </button>
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+              className="hidden"
+              tabIndex={-1}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) onFile(file);
+              }}
+            />
+          </>
+        ) : null}
+      </div>
       <textarea
         id={id}
         value={value}
@@ -213,11 +321,16 @@ function Field({
         spellCheck
         lang="ru"
         autoComplete="off"
-        className="mt-1 min-h-64 w-full resize-y rounded-md border border-stone-300 bg-white px-3 py-2 text-base leading-relaxed outline-none focus:border-stone-500"
+        className={`mt-1 min-h-64 w-full resize-y rounded-md border px-3 py-2 text-base leading-relaxed outline-none focus:border-stone-500 ${
+          dragOver ? "border-dashed border-stone-900 bg-stone-50" : "border-stone-300 bg-white"
+        }`}
       />
-      <p className={`mt-1 text-xs ${over ? "text-red-700" : "text-stone-400"}`}>
-        {value.length} / {MAX_INPUT_CHARS}
-      </p>
+      <div className="mt-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs md:justify-start">
+        <p className={over ? "text-red-700" : "text-stone-400"}>
+          {value.length} / {MAX_INPUT_CHARS}
+        </p>
+        {hint ? <p className="text-stone-400">{dragOver ? "Отпустите файл" : hint}</p> : null}
+      </div>
     </div>
   );
 }
