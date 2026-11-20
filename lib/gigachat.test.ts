@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { armGigachatBudget, chatBudget, chatCompletionsUrl, gigachatModel, upstreamBodySnippet } from "./gigachat.ts";
+import {
+  armGigachatBudget,
+  chatBudget,
+  chatCompletionsUrl,
+  gigachatModel,
+  httpFailureReason,
+  upstreamBodySnippet,
+} from "./gigachat.ts";
 
 describe("chatCompletionsUrl", () => {
   it("uses the documented base and joins the chat path", () => {
@@ -52,6 +59,17 @@ describe("chatBudget", () => {
     assert.equal(typeof value, "number");
     assert.equal((value ?? 0) <= 8_000, true);
     armGigachatBudget(0);
+  });
+});
+
+describe("httpFailureReason", () => {
+  it("names 429 and 5xx and ignores success", () => {
+    assert.equal(httpFailureReason(429), "http 429");
+    assert.equal(httpFailureReason(502), "http 502");
+    assert.equal(httpFailureReason(503), "http 503");
+    assert.equal(httpFailureReason(404), "http 404");
+    assert.equal(httpFailureReason(200), null);
+    assert.equal(httpFailureReason(0), null);
   });
 });
 

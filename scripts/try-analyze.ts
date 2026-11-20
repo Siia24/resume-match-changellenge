@@ -11,7 +11,7 @@ async function main() {
     console.log("Нет GIGACHAT_AUTH_KEY, запрос к GigaChat не отправляю.");
     return;
   }
-  const requirements = await listRequirements(vacancy);
+  const { items: requirements } = await listRequirements(vacancy);
   const text = await completeAnalysis(resume, vacancy, 0.3, requirements);
   const analysis = parseModelOutput(text, resume, requirements);
   console.log(JSON.stringify({ requirements, analysis }, null, 2));
