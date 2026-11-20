@@ -52,7 +52,13 @@ export async function POST(request: Request) {
       calls.push({
         name,
         ms: Date.now() - started,
-        raw: typeof value === "string" ? rawModelFixes(value) : [],
+        raw: Array.isArray(value)
+          ? value
+              .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+              .map((before) => ({ before, after: "", why: "" }))
+          : typeof value === "string"
+            ? rawModelFixes(value)
+            : [],
       });
       return value;
     } catch (error) {
@@ -72,12 +78,16 @@ export async function POST(request: Request) {
     }
   }
 
+  const preview = buildAnalysis(resume, requirements, []);
+  const evidence = [...preview.covered, ...preview.partial].map((item) => item.evidence);
   let analysis: Analysis | null = null;
   let text = "";
   const analysisTimeout = chatBudget(16_000);
   if (analysisTimeout) {
     try {
-      text = await timed("analysis", () => completeAnalysis(resume, vacancy, 0.3, requirements, analysisTimeout));
+      text = await timed("analysis", () =>
+        completeAnalysis(resume, vacancy, 0.3, requirements, analysisTimeout, evidence),
+      );
     } catch (error) {
       if (!(error instanceof AnalyzeError) || !error.retryable) {
         if (requirements.length) analysis = buildAnalysis(resume, requirements, []);
@@ -86,7 +96,9 @@ export async function POST(request: Request) {
         const retryTimeout = chatBudget(12_000);
         if (retryTimeout) {
           try {
-            text = await timed("retry", () => completeAnalysis(resume, vacancy, 0.5, requirements, retryTimeout));
+            text = await timed("retry", () =>
+              completeAnalysis(resume, vacancy, 0.5, requirements, retryTimeout, evidence),
+            );
           } catch (retryError) {
             if (requirements.length) analysis = buildAnalysis(resume, requirements, []);
             else return fail(retryError, debug, calls, refill);
@@ -143,6 +155,7 @@ export async function POST(request: Request) {
           need,
           reasons,
           refillTimeout,
+          evidence,
         ),
       );
     } catch (error) {

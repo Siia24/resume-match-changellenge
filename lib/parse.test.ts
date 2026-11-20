@@ -5,8 +5,10 @@ import {
   assembleFixes,
   normalize,
   parseModelOutput,
+  readFixes,
   readRequirementList,
   rejectFix,
+  resumeLines,
   textIncludesQuote,
 } from "./parse.ts";
 
@@ -370,6 +372,73 @@ describe("assembleFixes", () => {
       ),
       "shuffle",
     );
+  });
+});
+
+describe("lineId fixes", () => {
+  const resume =
+    "Сверки размещений, отчёты по радио и прессе. Пользуюсь Cursor и ChatGPT для прототипов и текстов.";
+  const vacancy =
+    "Нужен опыт AI-инструментов, прототипов, работы с данными. Нельзя приписывать чужие инструменты.";
+  const requirements = ["умение работать с данными", "опыт работы с AI-инструментами"];
+
+  it("drops invented lines and AI added to a reconciliation line", () => {
+    const lines = resumeLines(resume);
+    assert.equal(lines[0]?.id, "L1");
+    assert.match(lines[0]?.text ?? "", /Сверки/);
+    const raw = JSON.stringify({
+      fixes: [
+        {
+          lineId: "L99",
+          requirement: "данные",
+          after: "Использую Python и SQL для анализа данных",
+          why: "Так виден анализ.",
+        },
+        {
+          lineId: "L1",
+          requirement: "работа с данными",
+          after: "Создавала и оптимизировала рекламные кампании в TikTok и Google Ads",
+          why: "Сильнее.",
+        },
+        {
+          lineId: "L1",
+          requirement: "работа с данными",
+          after: "Повышала конверсию отдела на 15%",
+          why: "Цифра.",
+        },
+        {
+          lineId: "L1",
+          requirement: "работа с данными",
+          after: "Сверки размещений с помощью AI-инструментов и прототипы",
+          why: "Ближе к AI.",
+        },
+        {
+          lineId: "L1",
+          requirement: "умение работать с данными",
+          after: "Сверяю данные по размещениям и готовлю отчёты по радио и прессе",
+          why: "Факт виден сразу.",
+        },
+        {
+          lineId: "L2",
+          requirement: "опыт работы с AI-инструментами",
+          after: "Делаю прототипы в Cursor и пишу тексты с ChatGPT",
+          why: "Инструменты уже в строке.",
+        },
+      ],
+    });
+    const review = readFixes(raw, resume, requirements, vacancy, true);
+    assert.deepEqual(
+      review.reasons,
+      review.dropped.map((item) => item.reason),
+    );
+    assert.equal(review.reasons.some((reason) => reason.startsWith("unknown line")), true);
+    assert.equal(review.reasons.some((reason) => /tiktok|new tool|new claim/i.test(reason)), true);
+    assert.equal(review.reasons.some((reason) => reason.includes("15")), true);
+    assert.equal(review.reasons.some((reason) => /new tool ai/i.test(reason)), true);
+    assert.equal(review.fixes.length, 2);
+    assert.match(review.fixes[0]?.before ?? "", /Сверки размещений/);
+    assert.match(review.fixes[1]?.before ?? "", /Cursor и ChatGPT/);
+    assert.equal(review.fixes.some((item) => /AI-инструментов|15%|TikTok/i.test(item.after)), false);
   });
 });
 
