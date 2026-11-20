@@ -179,13 +179,24 @@ export default function HomePage() {
           <div className="grid gap-4 md:grid-cols-2">
             <section className="rounded-lg border border-stone-200 bg-white p-4 sm:p-5">
               <h2 className="text-sm font-medium text-stone-500">Уже есть в резюме</h2>
-              {result.covered.length === 0 ? (
+              {result.covered.length === 0 && result.partial.length === 0 ? (
                 <p className="mt-3 text-sm text-stone-600">Нет пунктов, которые уже закрыты.</p>
               ) : (
                 <ul className="mt-3 space-y-3">
                   {result.covered.map((item, index) => (
                     <li key={`${item.requirement}-${index}`} className="text-sm">
                       <p className="font-medium">{item.requirement}</p>
+                      <p className="mt-1 text-stone-600">«{item.evidence}»</p>
+                    </li>
+                  ))}
+                  {result.partial.map((item, index) => (
+                    <li key={`partial-${item.requirement}-${index}`} className="text-sm">
+                      <p className="font-medium">
+                        {item.requirement}{" "}
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900">
+                          частично
+                        </span>
+                      </p>
                       <p className="mt-1 text-stone-600">«{item.evidence}»</p>
                     </li>
                   ))}

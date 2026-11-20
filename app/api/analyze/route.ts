@@ -1,7 +1,7 @@
 import { AnalyzeError } from "@/lib/errors";
-import { completeAnalysis, listRequirements } from "@/lib/gigachat";
+import { completeAnalysis, completeMoreFixes, listRequirements } from "@/lib/gigachat";
 import { inputError } from "@/lib/limits";
-import { parseModelOutput } from "@/lib/parse";
+import { buildAnalysis, parseModelOutput, readFixes, type Analysis } from "@/lib/parse";
 
 export const maxDuration = 120;
 
@@ -33,18 +33,44 @@ export async function POST(request: Request) {
     console.error("gigachat requirements", error.message);
   }
 
+  let analysis: Analysis;
   try {
+    let text: string;
     try {
-      const text = await completeAnalysis(resume, vacancy, 0.3, requirements);
-      return Response.json(parseModelOutput(text, resume, requirements));
+      text = await completeAnalysis(resume, vacancy, 0.3, requirements);
     } catch (error) {
       if (!(error instanceof AnalyzeError) || !error.retryable) throw error;
-      const text = await completeAnalysis(resume, vacancy, 0.6, requirements);
-      return Response.json(parseModelOutput(text, resume, requirements));
+      text = await completeAnalysis(resume, vacancy, 0.5, requirements);
+    }
+    try {
+      analysis = parseModelOutput(text, resume, requirements);
+    } catch (error) {
+      if (!(error instanceof AnalyzeError) || !error.retryable || !requirements.length) throw error;
+      analysis = buildAnalysis(resume, requirements, []);
     }
   } catch (error) {
     if (error instanceof AnalyzeError) return jsonError(error.status, error.message);
     console.error("analyze", error instanceof Error ? error.message : "unknown");
     return jsonError(502, "Не удалось получить разбор. Попробуйте ещё раз.");
   }
+
+  if (analysis.fixes.length < 3) {
+    try {
+      const more = await completeMoreFixes(
+        resume,
+        vacancy,
+        requirements,
+        analysis.fixes.map((fix) => fix.before),
+        3 - analysis.fixes.length,
+      );
+      const extra = readFixes(more, resume, requirements);
+      const list = requirements.length
+        ? requirements
+        : [...analysis.covered, ...analysis.partial, ...analysis.gaps].map((item) => item.requirement);
+      analysis = buildAnalysis(resume, list, [...analysis.fixes, ...extra]);
+    } catch (error) {
+      console.error("gigachat fixes", error instanceof Error ? error.message : "error");
+    }
+  }
+  return Response.json(analysis);
 }
