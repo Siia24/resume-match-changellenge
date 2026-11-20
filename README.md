@@ -67,12 +67,13 @@ npm run build
 |---|---|---|
 | `GIGACHAT_AUTH_KEY` | да | Authorization key из кабинета GigaChat, строка Base64 |
 | `GIGACHAT_SCOPE` | нет | По умолчанию `GIGACHAT_API_PERS` (физлицо, бесплатный тариф) |
-| `GIGACHAT_MODEL` | нет | По умолчанию `GigaChat`. Другой id — если кабинет показывает иное имя |
+| `GIGACHAT_API_URL` | нет | Базовый адрес API. По умолчанию `https://api.giga.chat/v1`, к нему добавляется `/chat/completions` |
+| `GIGACHAT_MODEL` | нет | По умолчанию `GigaChat-2` (Lite). Имя `GigaChat` тоже уходит как `GigaChat-2`: на текущем API оно отвечает 404 |
 | `NEXT_PUBLIC_YM_ID` | нет | Номер счётчика Яндекс Метрики. Пусто — счётчик не подключается |
 
 Ключ живёт только на сервере. В браузер уходит уже готовый разбор.
 
-Запросы к GigaChat идут из `/api/analyze`. Токен берётся через `POST https://ngw.devices.sberbank.ru:9443/api/v2/oauth` (заголовок `RqUID`) и кэшируется до `expires_at`. Разбор — `POST https://api.giga.chat/v1/chat/completions`. Это актуальный адрес из документации Сбера (с 17 июля 2026); старый хост `gigachat.devices.sberbank.ru` пока жив, но его выводят из работы.
+Запросы к GigaChat идут из `/api/analyze`. Токен берётся через `POST https://ngw.devices.sberbank.ru:9443/api/v2/oauth` (заголовок `RqUID`) и кэшируется до `expires_at`. Разбор — `POST https://api.giga.chat/v1/chat/completions`. Это актуальный адрес из документации Сбера (с 17 июля 2026); старый хост `gigachat.devices.sberbank.ru` пока жив, но его выводят из работы. Другой базовый адрес задаётся через `GIGACHAT_API_URL`. Список моделей — `GET https://api.giga.chat/v1/models`. HTTP 404 на разборе означает «No such model», а не отсутствие адреса.
 
 Оба адреса подписаны сертификатом НУЦ Минцифры. В репозитории лежит официальный корневой сертификат `certs/russian_trusted_root_ca.crt` (Russian Trusted Root CA, скачан с `https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt`). Он добавляется только к HTTPS-агенту этих запросов, вместе с обычными корневыми сертификатами Node. Проверка TLS не отключается.
 

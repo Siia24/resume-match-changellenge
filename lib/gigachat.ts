@@ -2,12 +2,12 @@ import https from "node:https";
 import tls from "node:tls";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { AnalyzeError } from "@/lib/errors";
+import { AnalyzeError } from "./errors.ts";
 
 // Official chat host since 17 July 2026. OAuth stays on the gateway port.
 // https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/gigachat-api
 const OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
-const CHAT_URL = "https://api.giga.chat/v1/chat/completions";
+const DEFAULT_GIGACHAT_API_URL = "https://api.giga.chat/v1";
 const CERT_PATH = path.join(process.cwd(), "certs", "russian_trusted_root_ca.crt");
 
 const SYSTEM_PROMPT = `Ты сверяешь резюме с вакансией. Ничего не выдумывай.
@@ -52,12 +52,41 @@ function getAgent(): https.Agent {
   return agent;
 }
 
+type UpstreamBody = { status: number; json: unknown; text: string };
+
+export function chatCompletionsUrl(apiUrl?: string): string {
+  const raw = (apiUrl ?? process.env.GIGACHAT_API_URL)?.trim().replace(/\/+$/, "");
+  const base = raw || DEFAULT_GIGACHAT_API_URL;
+  if (base.endsWith("/chat/completions")) return base;
+  return `${base}/chat/completions`;
+}
+
+export function gigachatModel(value?: string): string {
+  const name = (value ?? process.env.GIGACHAT_MODEL)?.trim() || "GigaChat-2";
+  // Bare "GigaChat" is the pre-2026 id. Chat completions answers 404 No such model.
+  return name === "GigaChat" ? "GigaChat-2" : name;
+}
+
+export function upstreamBodySnippet(text: string): string {
+  return text
+    .slice(0, 500)
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/"(access_token|authorization|api_key|secret)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"')
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function logUpstream(kind: "oauth" | "chat", status: number, text: string) {
+  console.error(`gigachat ${kind} status ${status} body ${upstreamBodySnippet(text)}`);
+}
+
 function requestJson(
   url: string,
   headers: Record<string, string>,
   body: string,
   timeoutMs: number,
-): Promise<{ status: number; json: unknown }> {
+): Promise<UpstreamBody> {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
     const req = https.request(
@@ -85,7 +114,7 @@ function requestJson(
               json = null;
             }
           }
-          resolve({ status: res.statusCode ?? 0, json });
+          resolve({ status: res.statusCode ?? 0, json, text });
         });
       },
     );
@@ -123,17 +152,13 @@ function scope(): string {
   return process.env.GIGACHAT_SCOPE?.trim() || "GIGACHAT_API_PERS";
 }
 
-function model(): string {
-  return process.env.GIGACHAT_MODEL?.trim() || "GigaChat";
-}
-
 function expiresAtMs(value: number): number {
   return value < 1e12 ? value * 1000 : value;
 }
 
 async function fetchToken(): Promise<string> {
   const key = requireAuthKey();
-  let response: { status: number; json: unknown };
+  let response: UpstreamBody;
   try {
     response = await requestJson(
       OAUTH_URL,
@@ -158,14 +183,16 @@ async function fetchToken(): Promise<string> {
     );
   }
 
-  if (response.status === 400 || response.status === 401) {
-    console.error(`gigachat oauth status ${response.status}`);
+  if (response.status !== 200) {
+    logUpstream("oauth", response.status, response.text);
     throw new AnalyzeError(
       502,
-      "GigaChat не принял ключ. Проверьте GIGACHAT_AUTH_KEY и GIGACHAT_SCOPE.",
+      response.status === 400 || response.status === 401
+        ? "GigaChat не принял ключ. Проверьте GIGACHAT_AUTH_KEY и GIGACHAT_SCOPE."
+        : "Не удалось получить доступ к GigaChat. Попробуйте ещё раз.",
     );
   }
-  if (response.status !== 200 || !response.json || typeof response.json !== "object") {
+  if (!response.json || typeof response.json !== "object") {
     console.error(`gigachat oauth status ${response.status}`);
     throw new AnalyzeError(502, "Не удалось получить доступ к GigaChat. Попробуйте ещё раз.");
   }
@@ -190,8 +217,8 @@ function getAccessToken(): Promise<string> {
   return pendingToken;
 }
 
-function chatError(status: number): AnalyzeError {
-  console.error(`gigachat chat status ${status}`);
+function chatError(status: number, text: string): AnalyzeError {
+  logUpstream("chat", status, text);
   if (status === 401) {
     return new AnalyzeError(
       502,
@@ -207,7 +234,7 @@ function chatError(status: number): AnalyzeError {
   if (status === 429) {
     return new AnalyzeError(429, "Слишком много запросов к GigaChat. Подождите немного и попробуйте снова.");
   }
-  if (status === 400) {
+  if (status === 400 || status === 404) {
     return new AnalyzeError(502, "GigaChat отклонил запрос. Проверьте имя модели в GIGACHAT_MODEL.");
   }
   if (status === 413 || status === 422) {
@@ -218,14 +245,14 @@ function chatError(status: number): AnalyzeError {
 
 async function postChat(token: string, resume: string, vacancy: string) {
   return requestJson(
-    CHAT_URL,
+    chatCompletionsUrl(),
     {
       "Content-Type": "application/json",
       Accept: "application/json",
       Authorization: `Bearer ${token}`,
     },
     JSON.stringify({
-      model: model(),
+      model: gigachatModel(),
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: `Резюме:\n${resume.trim()}\n\nВакансия:\n${vacancy.trim()}` },
@@ -252,7 +279,7 @@ function readContent(json: unknown): { content: string; truncated: boolean } {
 export async function completeAnalysis(resume: string, vacancy: string): Promise<string> {
   requireAuthKey();
   let token = await getAccessToken();
-  let response: { status: number; json: unknown };
+  let response: UpstreamBody;
   try {
     response = await postChat(token, resume, vacancy);
     if (response.status === 401) {
@@ -272,7 +299,7 @@ export async function completeAnalysis(resume: string, vacancy: string): Promise
     );
   }
 
-  if (response.status !== 200) throw chatError(response.status);
+  if (response.status !== 200) throw chatError(response.status, response.text);
   const { content, truncated } = readContent(response.json);
   if (!content.trim()) {
     throw new AnalyzeError(
